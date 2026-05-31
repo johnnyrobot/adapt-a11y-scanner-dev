@@ -1,0 +1,89 @@
+# adapt-a11y-scanner
+
+Render LibreTexts **ADAPT** questions headlessly (authenticated, MathJax-aware)
+and scan the rendered DOM for **WCAG accessibility issues** with **LibreTexts
+Remedy**.
+
+ADAPT renders questions client-side (Vue SPA + MathJax v2), so a static fetch
+gets an empty shell. This bridge drives a real headless browser, waits for math
+to typeset, captures the question's actual DOM, and hands it to Remedy.
+
+```
+ADAPT  ──question / assignment id──►  adapt-a11y-scanner
+                                       1. service-account login → JWT cookie
+                                       2. render question (iframe or SPA), wait for MathJax
+                                       3. capture rendered DOM
+                                       4. scan ──► Remedy (HTTP service OR bundled core)
+                                       ◄── findings (JSON; non-zero exit on errors)
+```
+
+## Quick start
+
+```bash
+cp .env.example .env        # fill in ADAPT_BASE_URL, ADAPT_TOKEN, REMEDY_ENDPOINT
+npm install
+npm run build
+
+# scan one question
+node dist/index.js question 1234
+
+# scan every question in an assignment (gates CI: exit 1 if any errors)
+node dist/index.js assignment 5678
+```
+
+Or as a container:
+
+```bash
+docker build -t adapt-a11y-scanner .
+docker run --env-file .env adapt-a11y-scanner assignment 5678
+```
+
+## Configuration (all via env — see `.env.example`)
+
+| Var | Purpose |
+|---|---|
+| `ADAPT_BASE_URL` | ADAPT instance, e.g. `https://adapt.libretexts.org` |
+| `ADAPT_TOKEN` | **Preferred** — service-account JWT (set as ADAPT's `token` cookie) |
+| `ADAPT_EMAIL`/`ADAPT_PASSWORD` | Fallback login (dev/bootstrap only — issue a token in prod) |
+| `RENDER_MODE` | `iframe` (render `/api/get-header-html/{id}` directly, fast) or `spa` |
+| `SCAN_MODE` | `http` (POST DOM to remedy-server) or `in-process` (bundled remedy-core) |
+| `REMEDY_ENDPOINT` | remedy-server URL when `SCAN_MODE=http` |
+| `MATHJAX_TIMEOUT_MS` / `NAV_TIMEOUT_MS` | render/wait tuning |
+
+### Two scan modes
+- **`http`** (default, recommended): the bridge POSTs the rendered HTML to a
+  running **remedy-server** and stays a small stateless renderer. Scales
+  independently; no Remedy code bundled.
+- **`in-process`**: imports `@libretexts/remedy-core` and scans in the same
+  process. One deployable unit, but you must install/link that package.
+
+## How it authenticates
+ADAPT's API guard is JWT (`tymon/jwt-auth`); the SPA reads the JWT from a cookie
+named `token`. The bridge sets that cookie from `ADAPT_TOKEN` (or mints one via
+`/api/login`). **In production, issue a dedicated service-account token** rather
+than using a human password.
+
+## What this repo is — and what your team still owns
+
+This is a **working, deployable bridge** and the integration spec — *not* a
+turnkey product feature. It was extracted from a verified proof-of-concept
+(see [`docs/INTEGRATION.md`](docs/INTEGRATION.md) for the evidence and findings).
+
+**Ready:** the auth mechanism, the MathJax-v2 wait, the iframe DOM capture, the
+`/api/get-header-html/{id}` fast path, batch-by-assignment, JSON output + exit
+codes, containerization.
+
+**Your DevOps team owns** (documented, not faked):
+- the production **service-account / token** issuance and rotation,
+- **where it runs** (a queue worker? a job ADAPT triggers on question save? a
+  nightly sweep?),
+- **where findings go** (store + surface in the ADAPT author UI, or a report),
+- **retries, rate-limiting, and observability** for the LLM-backed Remedy calls,
+- if `SCAN_MODE=http`, the **response mapping** in `src/scanner.ts` may need to
+  match your remedy-server endpoint's exact schema.
+
+## Requirements
+- Node ≥ 22 (uses built-in `fetch`/`FormData`)
+- A reachable ADAPT instance + a service-account token
+- A running **remedy-server** (`SCAN_MODE=http`) or `@libretexts/remedy-core`
+  installed (`SCAN_MODE=in-process`)

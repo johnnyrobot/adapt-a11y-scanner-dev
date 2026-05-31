@@ -1,0 +1,30 @@
+{
+  "name": "adapt-a11y-scanner",
+  "version": "0.1.0",
+  "description": "Render LibreTexts ADAPT questions headlessly (authenticated, MathJax-aware) and scan them for WCAG accessibility issues with LibreTexts Remedy.",
+  "type": "module",
+  "bin": {
+    "adapt-a11y-scanner": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "npm run build && node dist/index.js",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "playwright": "^1.48.0"
+  },
+  "optionalDependencies": {
+    "@libretexts/remedy-core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}
