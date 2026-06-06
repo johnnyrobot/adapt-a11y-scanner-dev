@@ -18,6 +18,10 @@ export interface QuestionScanResult {
   capturedBytes: number;
   scannedAt: string;
   findings: Finding[];
+  /** The validator's authoritative verdict for this question (fail-closed). */
+  overallPassed: boolean;
+  /** True when the question could not be rendered/scanned (render/network/auth). */
+  failed: boolean;
   stats: { errors: number; warnings: number; total: number };
   error?: string;
 }

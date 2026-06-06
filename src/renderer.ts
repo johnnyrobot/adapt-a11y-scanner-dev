@@ -17,23 +17,52 @@ export interface RenderedQuestion {
   html: string;
 }
 
+/** ADAPT question/assignment ids are numeric. Reject anything else so a crafted
+ *  id can't forge an authenticated same-origin request via path traversal (L4). */
+export function isValidId(id: number | string): boolean {
+  return /^[0-9]+$/.test(String(id));
+}
+
+/** Build the service-account JWT cookie, hardened so rendered (instructor-authored)
+ *  question JS cannot read or exfiltrate it: httpOnly + SameSite=Strict, and
+ *  secure whenever the base URL is https (relaxed only for localhost dev). H3. */
+export function buildTokenCookie(
+  token: string,
+  baseUrl: string,
+): { name: string; value: string; domain: string; path: string; httpOnly: boolean; secure: boolean; sameSite: 'Strict' } {
+  const u = new URL(baseUrl);
+  return {
+    name: 'token',
+    value: token,
+    domain: u.hostname,
+    path: '/',
+    httpOnly: true,
+    secure: u.protocol === 'https:',
+    sameSite: 'Strict',
+  };
+}
+
 export class AdaptRenderer {
   private browser?: Browser;
   private ctx?: BrowserContext;
   private token?: string;
-  private readonly host: string;
 
-  constructor(private readonly cfg: Config) {
-    this.host = new URL(cfg.adaptBaseUrl).hostname;
-  }
+  constructor(private readonly cfg: Config) {}
 
   async init(): Promise<void> {
-    this.browser = await chromium.launch({ args: ['--no-sandbox'] });
-    this.ctx = await this.browser.newContext();
-    this.token = await this.resolveToken();
-    await this.ctx.addCookies([
-      { name: 'token', value: this.token, domain: this.host, path: '/' },
-    ]);
+    // Keep the Chromium sandbox ON by default (run as non-root pwuser in the
+    // container). Only disable it via CHROMIUM_NO_SANDBOX when running as root (M6).
+    const args = this.cfg.chromiumNoSandbox ? ['--no-sandbox'] : [];
+    this.browser = await chromium.launch({ args });
+    try {
+      this.ctx = await this.browser.newContext();
+      this.token = await this.resolveToken();
+      await this.ctx.addCookies([buildTokenCookie(this.token, this.cfg.adaptBaseUrl)]);
+    } catch (e) {
+      // L2: don't leak the browser if a later init step (e.g. login) throws.
+      await this.close();
+      throw e;
+    }
   }
 
   /** The resolved service-account JWT (set after init) — reused for ADAPT API calls. */
@@ -46,21 +75,29 @@ export class AdaptRenderer {
   private async resolveToken(): Promise<string> {
     if (this.cfg.adaptToken) return this.cfg.adaptToken;
     const page = await this.ctx!.newPage();
+    page.setDefaultTimeout(this.cfg.navTimeoutMs);
     try {
       // In-page fetch so the request uses the browser's resolver (handles both
       // real domains and *.localhost dev hosts).
       await page.goto(`${this.cfg.adaptBaseUrl}/login`, { waitUntil: 'domcontentloaded' });
       const token = await page.evaluate(
-        async ({ base, email, password }) => {
+        async ({ base, email, password, timeout }) => {
+          // Bound the login so a stalled instance can't hang init() forever (M1).
           const r = await fetch(`${base}/api/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, password }),
+            signal: AbortSignal.timeout(timeout),
           });
           if (!r.ok) throw new Error(`login ${r.status}: ${await r.text()}`);
           return (await r.json()).token as string;
         },
-        { base: this.cfg.adaptBaseUrl, email: this.cfg.adaptEmail, password: this.cfg.adaptPassword },
+        {
+          base: this.cfg.adaptBaseUrl,
+          email: this.cfg.adaptEmail,
+          password: this.cfg.adaptPassword,
+          timeout: this.cfg.navTimeoutMs,
+        },
       );
       if (!token) throw new Error('ADAPT login returned no token');
       return token;
@@ -72,6 +109,12 @@ export class AdaptRenderer {
   /** Render one question and return its post-MathJax DOM. */
   async renderQuestion(questionId: number | string, assignmentId?: number | string): Promise<RenderedQuestion> {
     if (!this.ctx) throw new Error('renderer not initialized — call init()');
+    if (!isValidId(questionId)) {
+      throw new Error(`Invalid questionId (must be numeric): ${JSON.stringify(questionId)}`);
+    }
+    if (assignmentId != null && !isValidId(assignmentId)) {
+      throw new Error(`Invalid assignmentId (must be numeric): ${JSON.stringify(assignmentId)}`);
+    }
     const page = await this.ctx.newPage();
     page.setDefaultTimeout(this.cfg.navTimeoutMs);
     try {
@@ -133,7 +176,18 @@ export class AdaptRenderer {
   }
 
   async close(): Promise<void> {
-    await this.ctx?.close();
-    await this.browser?.close();
+    // Each step guarded so a context-close failure still closes the browser (L2).
+    try {
+      await this.ctx?.close();
+    } catch {
+      /* ignore */
+    }
+    try {
+      await this.browser?.close();
+    } catch {
+      /* ignore */
+    }
+    this.ctx = undefined;
+    this.browser = undefined;
   }
 }

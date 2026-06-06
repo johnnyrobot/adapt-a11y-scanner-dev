@@ -6,13 +6,16 @@
  *   adapt-a11y-scanner assignment <assignmentId>
  *
  * Renders each ADAPT question headlessly, scans the rendered DOM with Remedy,
- * and prints a JSON report to stdout. Exit code is non-zero if any question has
- * accessibility ERRORS (so CI / a job can gate on it).
+ * and prints a JSON report to stdout. The exit code fails CLOSED (see report.ts):
+ * non-zero if any question is not-passed, has error findings, or failed to
+ * render/scan — so CI / a job can gate on it. Codes: 0 ok, 1 problems found,
+ * 2 usage, 3 fatal.
  */
 import { loadConfig } from './config.js';
 import { AdaptRenderer } from './renderer.js';
 import { scanHtml } from './scanner.js';
 import { listAssignmentQuestions } from './adapt-client.js';
+import { summarize } from './report.js';
 import type { QuestionScanResult } from './types.js';
 
 function usage(): never {
@@ -33,49 +36,62 @@ async function scanOne(
     capturedBytes: 0,
     scannedAt: new Date().toISOString(),
     findings: [],
+    overallPassed: false,
+    failed: false,
     stats: { errors: 0, warnings: 0, total: 0 },
   } satisfies QuestionScanResult;
   try {
     const { url, html } = await renderer.renderQuestion(questionId, assignmentId);
-    const findings = await scanHtml(html, cfg);
+    const { findings, overallPassed } = await scanHtml(html, cfg);
     const errors = findings.filter((f) => f.severity === 'error').length;
     const warnings = findings.filter((f) => f.severity === 'warning').length;
-    return { ...base, renderedUrl: url, capturedBytes: html.length, findings, stats: { errors, warnings, total: findings.length } };
+    return {
+      ...base,
+      renderedUrl: url,
+      capturedBytes: Buffer.byteLength(html, 'utf8'),
+      findings,
+      overallPassed,
+      stats: { errors, warnings, total: findings.length },
+    };
   } catch (e) {
-    return { ...base, error: (e as Error).message };
+    return { ...base, error: (e as Error).message, failed: true };
   }
 }
 
 async function main(): Promise<void> {
+  // Validate the command + required args BEFORE loading config or launching a
+  // browser (L14): a bad invocation must exit 2 cheaply, not after a full launch.
   const [cmd, a, b] = process.argv.slice(2);
-  if (!cmd) usage();
+  if (cmd !== 'question' && cmd !== 'assignment') usage();
+  if (!a) usage();
+
   const cfg = loadConfig();
+  if (cmd === 'question' && cfg.renderMode === 'spa' && b == null) {
+    console.error('[bridge] RENDER_MODE=spa needs an assignmentId: question <questionId> <assignmentId>');
+    process.exit(2);
+  }
+
   const renderer = new AdaptRenderer(cfg);
   await renderer.init();
 
   const results: QuestionScanResult[] = [];
   try {
     if (cmd === 'question') {
-      if (!a) usage();
       results.push(await scanOne(renderer, cfg, a, b));
-    } else if (cmd === 'assignment') {
-      if (!a) usage();
+    } else {
       const questions = await listAssignmentQuestions(cfg.adaptBaseUrl, renderer.getToken(), a);
       console.error(`[bridge] scanning ${questions.length} question(s) in assignment ${a}`);
       for (const q of questions) results.push(await scanOne(renderer, cfg, q.id, a));
-    } else {
-      usage();
     }
   } finally {
     await renderer.close();
   }
 
-  const totals = results.reduce(
-    (acc, r) => ({ errors: acc.errors + r.stats.errors, warnings: acc.warnings + r.stats.warnings }),
-    { errors: 0, warnings: 0 },
-  );
+  const { totals, exitCode } = summarize(results);
   console.log(JSON.stringify({ scanMode: cfg.scanMode, renderMode: cfg.renderMode, totals, results }, null, 2));
-  process.exit(totals.errors > 0 ? 1 : 0);
+  // M3: set exitCode and let the event loop drain stdout, rather than
+  // process.exit() which truncates a large piped JSON report.
+  process.exitCode = exitCode;
 }
 
 main().catch((e) => {
