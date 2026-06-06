@@ -39,6 +39,12 @@ docker build -t adapt-a11y-scanner .
 docker run --env-file .env adapt-a11y-scanner assignment 5678
 ```
 
+To run it as a one-shot job alongside a `libre-remedy-server` deployment, see
+[`deploy/docker-compose.example.yml`](deploy/docker-compose.example.yml) (join the
+server's network, or point `REMEDY_ENDPOINT` at its public Caddy endpoint). The
+server must run its full `runtime` image — the `runtime-slim` target disables
+`/v1/validate/html`.
+
 ## Configuration (all via env — see `.env.example`)
 
 | Var | Purpose |

@@ -1,0 +1,33 @@
+# Reference: run adapt-a11y-scanner as a one-shot job against a remedy-server
+# that is already running via libre-remedy-server's own docker-compose (which
+# creates an `edge` network and serves remedy-server on :8000 internally).
+#
+#   docker compose -f deploy/docker-compose.example.yml run --rm scanner assignment 1234
+#
+# IMPORTANT: the server must run its FULL `runtime` image. The `runtime-slim`
+# target disables /v1/validate/html (returns 503) and will NOT work with this
+# scanner.
+#
+# Topology options:
+#   (A) Join the server's internal network (this file): use the container DNS
+#       name `remedy-server:8000`. Set the external network name to the server
+#       compose project's network, e.g. `libre-remedy-server_edge`.
+#   (B) Talk to the public Caddy endpoint instead: drop the `networks:` block and
+#       set REMEDY_ENDPOINT to https://<DOMAIN>/v1/validate/html (443).
+# Either way REMEDY_API_KEY must equal the server's APP_API_KEY (X-API-Key).
+
+services:
+  scanner:
+    build: ..                # builds the image from this repo's Dockerfile
+    env_file: ../.env        # ADAPT_BASE_URL, ADAPT_TOKEN, REMEDY_API_KEY, ...
+    environment:
+      SCAN_MODE: http
+      REMEDY_ENDPOINT: http://remedy-server:8000/v1/validate/html
+    networks:
+      - edge
+
+networks:
+  edge:
+    external: true
+    # Replace with the actual network created by libre-remedy-server's compose:
+    name: libre-remedy-server_edge
