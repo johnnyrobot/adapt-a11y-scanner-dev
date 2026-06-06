@@ -59,9 +59,22 @@ findings can be surfaced for human review):
   schedule to build an accessibility report across existing content.
 - **CI gate** — the CLI exits non-zero when a question has WCAG **errors**.
 
+## The remedy-server HTTP contract (`SCAN_MODE=http`)
+`src/scanner.ts` is wired for **libretexts-remedy-server**'s `POST /v1/validate/html`:
+- **Auth:** the server checks an **`X-API-Key`** header (it ignores `Authorization`);
+  set `REMEDY_API_KEY` to the server's `APP_API_KEY`.
+- **Response:** findings come from the top-level **`all_violations`** array (merged
+  axe/pa11y/lighthouse/wave), each item carrying `id`, `impact`
+  (`critical|serious|moderate|minor`), `tool`, `description`, `wcag`, and
+  `context`/`html_snippets`. The scanner maps `impact` → `error`/`warning` and
+  gates on the server's authoritative **`overall_passed`** (fail-closed).
+- **`fixable`** is always `undefined` — the validate-only endpoint detects, it
+  does not remediate.
+
+If you point at a *different* validator (raw axe/pa11y/lighthouse, etc.), adjust
+the mapping in `src/scanner.ts`.
+
 ## Open decisions for DevOps
-- Service-account token issuance + rotation.
+- Service-account token issuance + rotation; the `REMEDY_API_KEY`.
 - Deployment shape (worker / triggered job / cron) and concurrency.
 - Findings storage + how they surface to authors.
-- `SCAN_MODE=http` response mapping in `src/scanner.ts` if you point at the
-  `/v1/validate/html` (axe+pa11y+lighthouse) endpoint vs. a remedy-core-shaped one.

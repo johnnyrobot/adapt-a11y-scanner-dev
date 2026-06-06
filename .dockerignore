@@ -1,0 +1,17 @@
+# Keep the build context small and prevent secrets/artifacts from being sent to
+# the Docker daemon (even though the Dockerfile COPYs selectively).
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.local
+.DS_Store
+test
+docs
+*.md
+.github
+.idea
+.vscode

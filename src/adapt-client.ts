@@ -4,6 +4,8 @@
  * (Node fetch resolves real ADAPT domains directly; for *.localhost dev hosts,
  * scan questions by id instead of listing.)
  */
+import { parseJsonStrict } from './scanner.js';
+
 export interface AdaptQuestionRef {
   id: number | string;
   title?: string;
@@ -20,9 +22,9 @@ export async function listAssignmentQuestions(
   if (!res.ok) {
     throw new Error(`ADAPT get-questions-info ${res.status}: ${(await res.text()).slice(0, 200)}`);
   }
-  const body = await res.json();
+  const body = parseJsonStrict(await res.text(), 'ADAPT get-questions-info') as Record<string, unknown>;
   // ADAPT nests the list under a few possible keys depending on version.
-  const arr: unknown[] = body.questions ?? body.question_info ?? body.data ?? [];
+  const arr = (body.questions ?? body.question_info ?? body.data ?? []) as unknown[];
   const refs: (AdaptQuestionRef | null)[] = (Array.isArray(arr) ? arr : []).map((q) => {
     const o = q as Record<string, unknown>;
     const id = o.id ?? o.question_id ?? o.questionId;

@@ -20,8 +20,9 @@ ADAPT  ──question / assignment id──►  adapt-a11y-scanner
 ## Quick start
 
 ```bash
-cp .env.example .env        # fill in ADAPT_BASE_URL, ADAPT_TOKEN, REMEDY_ENDPOINT
+cp .env.example .env        # fill in ADAPT_BASE_URL, ADAPT_TOKEN, REMEDY_ENDPOINT, REMEDY_API_KEY
 npm install
+npx playwright install chromium   # local browser (the Docker image bundles it)
 npm run build
 
 # scan one question
@@ -46,16 +47,23 @@ docker run --env-file .env adapt-a11y-scanner assignment 5678
 | `ADAPT_TOKEN` | **Preferred** — service-account JWT (set as ADAPT's `token` cookie) |
 | `ADAPT_EMAIL`/`ADAPT_PASSWORD` | Fallback login (dev/bootstrap only — issue a token in prod) |
 | `RENDER_MODE` | `iframe` (render `/api/get-header-html/{id}` directly, fast) or `spa` |
-| `SCAN_MODE` | `http` (POST DOM to remedy-server) or `in-process` (bundled remedy-core) |
+| `SCAN_MODE` | `http` (POST DOM to remedy-server) or `in-process` (bundled remedy-core, **dev-only**) |
 | `REMEDY_ENDPOINT` | remedy-server URL when `SCAN_MODE=http` |
+| `REMEDY_API_KEY` | **Required for `http`** — remedy-server API key, sent as `X-API-Key` (must equal the server's `APP_API_KEY`) |
+| `REMEDY_TIMEOUT_MS` | max wait for the synchronous remedy scan (default `240000`) |
+| `CHROMIUM_NO_SANDBOX` | set `1` only when running as root; otherwise leave the sandbox on |
 | `MATHJAX_TIMEOUT_MS` / `NAV_TIMEOUT_MS` | render/wait tuning |
 
 ### Two scan modes
-- **`http`** (default, recommended): the bridge POSTs the rendered HTML to a
-  running **remedy-server** and stays a small stateless renderer. Scales
-  independently; no Remedy code bundled.
-- **`in-process`**: imports `@libretexts/remedy-core` and scans in the same
-  process. One deployable unit, but you must install/link that package.
+- **`http`** (default, recommended, **production**): the bridge POSTs the
+  rendered HTML to a running **remedy-server** (`POST /v1/validate/html`,
+  authenticated with `X-API-Key`) and stays a small stateless renderer. Scales
+  independently; no Remedy code bundled. The response mapping in
+  `src/scanner.ts` targets the libretexts-remedy-server schema (`all_violations`,
+  `overall_passed`).
+- **`in-process`** (**dev-only**): imports `@libretexts/remedy-core` and scans
+  in the same process. Not wired for production transfer — you must install/link
+  that package yourself (it is not a published dependency).
 
 ## How it authenticates
 ADAPT's API guard is JWT (`tymon/jwt-auth`); the SPA reads the JWT from a cookie
@@ -79,11 +87,19 @@ codes, containerization.
   nightly sweep?),
 - **where findings go** (store + surface in the ADAPT author UI, or a report),
 - **retries, rate-limiting, and observability** for the LLM-backed Remedy calls,
-- if `SCAN_MODE=http`, the **response mapping** in `src/scanner.ts` may need to
-  match your remedy-server endpoint's exact schema.
+- if you point `SCAN_MODE=http` at a **different** validator than
+  libretexts-remedy-server (e.g. a raw axe/pa11y/lighthouse service), the
+  **response mapping** in `src/scanner.ts` must be adjusted — it is wired for
+  the libretexts-remedy-server `all_violations`/`overall_passed` schema.
 
 ## Requirements
-- Node ≥ 22 (uses built-in `fetch`/`FormData`)
+- Node ≥ 20 (uses built-in `fetch`/`FormData`/`node:test`)
 - A reachable ADAPT instance + a service-account token
-- A running **remedy-server** (`SCAN_MODE=http`) or `@libretexts/remedy-core`
-  installed (`SCAN_MODE=in-process`)
+- A running **remedy-server** with an API key (`SCAN_MODE=http`), or
+  `@libretexts/remedy-core` installed (`SCAN_MODE=in-process`, dev-only)
+
+## Tests
+`npm test` builds and runs the unit suite (`node:test`, zero extra deps):
+response-mapping/severity (`scanner`), env validation (`config`), and the
+fail-closed CI gate (`report`). CI runs typecheck + build + tests
+(`.github/workflows/ci.yml`).
