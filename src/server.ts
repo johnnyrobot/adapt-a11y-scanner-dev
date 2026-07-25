@@ -18,6 +18,13 @@ if (!API_KEY && !ALLOW_UNAUTHENTICATED) {
   process.exit(1);
 }
 
+// Messages runAdaptScan raises for invalid requests rather than infrastructure
+// failure. Kept explicit so a genuine server fault is never masked as a 400.
+const CLIENT_CORRECTABLE = [
+  'needs assignmentId',
+  'must be "question" or "assignment"',
+];
+
 const server = createServer(async (req, res) => {
   setSecurityHeaders(res);
   if (req.method === 'GET' && req.url === '/healthz') {
@@ -43,7 +50,7 @@ const server = createServer(async (req, res) => {
     scan = parseRequest(await readJson(req));
   } catch (e) {
     const message = (e as Error).message;
-    const status = message.includes('exceeds') ? 413 : 400;
+    const status = (e as Error & { tooLarge?: boolean }).tooLarge ? 413 : 400;
     json(res, status, { ok: false, error: message });
     return;
   }
@@ -53,6 +60,13 @@ const server = createServer(async (req, res) => {
     json(res, 200, { ok: report.exitCode === 0, ...report });
   } catch (e) {
     const message = (e as Error).message;
+    // runAdaptScan also raises client-correctable configuration errors (e.g. a
+    // question scan in SPA mode without an assignmentId). Those are the
+    // caller's to fix, so they must not be reported as server faults.
+    if (CLIENT_CORRECTABLE.some((fragment) => message.includes(fragment))) {
+      json(res, 400, { ok: false, error: message });
+      return;
+    }
     console.error('[adapt-a11y-scanner] scan failed:', message);
     json(res, 500, { ok: false, error: message });
   }
@@ -69,7 +83,14 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
     const chunk = Buffer.isBuffer(c) ? c : Buffer.from(c);
     total += chunk.length;
     if (total > MAX_REQUEST_BYTES) {
-      throw new Error(`Request body exceeds ${MAX_REQUEST_BYTES} bytes.`);
+      // Tagged rather than matched on message text: the 413 mapping below used
+      // to sniff for "exceeds", so a reworded message would have silently
+      // downgraded oversized requests to 400.
+      const err = new Error(`Request body exceeds ${MAX_REQUEST_BYTES} bytes.`) as Error & {
+        tooLarge?: boolean;
+      };
+      err.tooLarge = true;
+      throw err;
     }
     chunks.push(chunk);
   }

@@ -154,8 +154,11 @@ export class AdaptRenderer {
         const ready = await frame.evaluate(() => document.readyState === 'complete').catch(() => false);
         if (ready) return frame;
       }
-      if (Date.now() + pollMs > deadline) break;
-      await page.waitForTimeout(pollMs);
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      // Sleep only what is left rather than breaking when under one interval
+      // remains: a 2000ms timeout would otherwise give up after ~1000ms.
+      await page.waitForTimeout(Math.min(pollMs, remaining));
     }
     throw new Error(
       `question content frame (get-header-html) did not appear within ${this.cfg.navTimeoutMs}ms`,
