@@ -143,15 +143,23 @@ export class AdaptRenderer {
 
   /** In SPA mode, find the frame that actually holds the question content. */
   private async waitForContentFrame(page: Page): Promise<Frame> {
-    for (let i = 0; i < 30; i++) {
+    // Deadline-driven rather than a fixed 30 iterations: a hard-coded 30s both
+    // overran a tight NAV_TIMEOUT_MS (a 10s CI gate still waited 30s) and cut
+    // short a deliberately generous one.
+    const pollMs = 1000;
+    const deadline = Date.now() + this.cfg.navTimeoutMs;
+    for (;;) {
       const frame = page.frames().find((f) => f.url().includes('get-header-html'));
       if (frame) {
         const ready = await frame.evaluate(() => document.readyState === 'complete').catch(() => false);
         if (ready) return frame;
       }
-      await page.waitForTimeout(1000);
+      if (Date.now() + pollMs > deadline) break;
+      await page.waitForTimeout(pollMs);
     }
-    throw new Error('question content frame (get-header-html) did not appear');
+    throw new Error(
+      `question content frame (get-header-html) did not appear within ${this.cfg.navTimeoutMs}ms`,
+    );
   }
 
   /** Wait for MathJax v2 to finish typesetting (or time out and capture anyway). */

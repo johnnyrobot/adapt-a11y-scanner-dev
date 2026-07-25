@@ -33,13 +33,28 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // Request parsing and the scan itself are separated so their failures get
+  // different statuses: previously a Chromium crash, an unreachable
+  // remedy-server or an ADAPT 5xx all surfaced as 400, so a caller that sent a
+  // perfectly valid body could not tell its own mistake from a retryable
+  // server-side fault.
+  let scan: AdaptScanRequest;
   try {
-    const body = await readJson(req);
-    const scan = parseRequest(body);
+    scan = parseRequest(await readJson(req));
+  } catch (e) {
+    const message = (e as Error).message;
+    const status = message.includes('exceeds') ? 413 : 400;
+    json(res, status, { ok: false, error: message });
+    return;
+  }
+
+  try {
     const report = await runAdaptScan(scan);
     json(res, 200, { ok: report.exitCode === 0, ...report });
   } catch (e) {
-    json(res, 400, { ok: false, error: (e as Error).message });
+    const message = (e as Error).message;
+    console.error('[adapt-a11y-scanner] scan failed:', message);
+    json(res, 500, { ok: false, error: message });
   }
 });
 

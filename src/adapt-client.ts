@@ -15,10 +15,24 @@ export async function listAssignmentQuestions(
   baseUrl: string,
   token: string,
   assignmentId: number | string,
+  timeoutMs?: number,
 ): Promise<AdaptQuestionRef[]> {
-  const res = await fetch(`${baseUrl}/api/assignments/${assignmentId}/get-questions-info`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-  });
+  // Without a signal this request can hang indefinitely on a stalled ADAPT
+  // endpoint, stalling the whole assignment batch — and, because the caller
+  // runs it inside a try/finally, delaying renderer.close() with it.
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}/api/assignments/${assignmentId}/get-questions-info`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
+    });
+  } catch (e) {
+    const err = e as Error;
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+      throw new Error(`ADAPT get-questions-info timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  }
   if (!res.ok) {
     throw new Error(`ADAPT get-questions-info ${res.status}: ${(await res.text()).slice(0, 200)}`);
   }

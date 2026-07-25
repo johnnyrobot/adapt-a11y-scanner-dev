@@ -68,7 +68,8 @@ export async function runAdaptScan(req: AdaptScanRequest): Promise<AdaptScanRepo
     if (req.mode === 'question') {
       results.push(await scanOne(renderer, cfg, req.id, req.assignmentId));
     } else {
-      const questions = await listAssignmentQuestions(cfg.adaptBaseUrl, renderer.getToken(), req.id);
+      const questions = await listAssignmentQuestions(
+        cfg.adaptBaseUrl, renderer.getToken(), req.id, cfg.navTimeoutMs);
       for (const q of questions) {
         results.push(await scanOne(renderer, cfg, q.id, req.id));
       }
