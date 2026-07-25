@@ -127,10 +127,20 @@ export function parseRemedyResponse(body: unknown): ScanResult {
   return { findings: normalize(raw), overallPassed: b.overall_passed === true };
 }
 
-/** Map an axe/pa11y/lighthouse `impact` to the canonical severity the CI gate
- *  keys on: critical|serious ⇒ error, everything else ⇒ warning. */
+/** Map an axe/pa11y/lighthouse `impact` — or an already-canonical severity — to
+ *  the value the CI gate keys on: critical|serious|error ⇒ error, everything
+ *  else ⇒ warning.
+ *
+ *  Input is trimmed and lower-cased because it reaches us from several tools
+ *  (and, via normalizeCore, from remedy-core) with inconsistent casing and
+ *  padding; an exact comparison silently downgraded "Critical" / " SERIOUS "
+ *  to a non-blocking warning. `error` is accepted so already-canonical
+ *  severities survive the round trip instead of being downgraded. */
 export function mapImpact(impact: unknown): 'error' | 'warning' {
-  return impact === 'critical' || impact === 'serious' ? 'error' : 'warning';
+  const value = String(impact ?? '').trim().toLowerCase();
+  return value === 'critical' || value === 'serious' || value === 'error'
+    ? 'error'
+    : 'warning';
 }
 
 /** Normalize remedy-server `all_violations` items to Finding[]. Field map (per
@@ -161,13 +171,16 @@ export function normalize(items: unknown[]): Finding[] {
 
 /** Normalize @libretexts/remedy-core (in-process) findings, whose shape differs
  *  from the HTTP server's: it already carries ruleId/severity/message. */
-function normalizeCore(items: unknown[]): Finding[] {
+export function normalizeCore(items: unknown[]): Finding[] {
   return items.map((f) => {
     const o = f as Record<string, unknown>;
     return {
       ruleId: String(o.ruleId ?? o.rule ?? o.code ?? 'unknown'),
       wcag: o.wcag ? String(o.wcag) : undefined,
-      severity: String(o.severity ?? o.type ?? o.impact ?? 'warning'),
+      // Canonicalize like the HTTP path does. Passing the raw string through
+      // meant an in-process scan reporting "critical"/"serious" never matched
+      // the `severity === 'error'` gate, so a critical finding still exited 0.
+      severity: mapImpact(o.severity ?? o.type ?? o.impact),
       message: String(o.message ?? o.description ?? ''),
       selector: o.selector ? String(o.selector) : undefined,
       snippet: o.snippet ? String(o.snippet) : undefined,

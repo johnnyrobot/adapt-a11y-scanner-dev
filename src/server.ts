@@ -6,6 +6,17 @@ const HOST = process.env.SCANNER_HOST ?? '0.0.0.0';
 const PORT = Number(process.env.SCANNER_PORT ?? 5176);
 const MAX_REQUEST_BYTES = Number(process.env.SCANNER_MAX_REQUEST_BYTES ?? 100_000);
 const API_KEY = process.env.SCANNER_API_KEY ?? '';
+// An unset key used to disable authentication silently, leaving any reachable
+// caller able to run scans with this service's ADAPT credentials. Running
+// without a key is now an explicit, deliberate opt-in.
+const ALLOW_UNAUTHENTICATED = process.env.SCANNER_ALLOW_UNAUTHENTICATED === '1';
+if (!API_KEY && !ALLOW_UNAUTHENTICATED) {
+  console.error(
+    '[adapt-a11y-scanner] refusing to start: set SCANNER_API_KEY, or set ' +
+      'SCANNER_ALLOW_UNAUTHENTICATED=1 to intentionally run without auth.',
+  );
+  process.exit(1);
+}
 
 const server = createServer(async (req, res) => {
   setSecurityHeaders(res);
