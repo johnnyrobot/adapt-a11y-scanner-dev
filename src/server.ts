@@ -6,6 +6,24 @@ const HOST = process.env.SCANNER_HOST ?? '0.0.0.0';
 const PORT = Number(process.env.SCANNER_PORT ?? 5176);
 const MAX_REQUEST_BYTES = Number(process.env.SCANNER_MAX_REQUEST_BYTES ?? 100_000);
 const API_KEY = process.env.SCANNER_API_KEY ?? '';
+// An unset key used to disable authentication silently, leaving any reachable
+// caller able to run scans with this service's ADAPT credentials. Running
+// without a key is now an explicit, deliberate opt-in.
+const ALLOW_UNAUTHENTICATED = process.env.SCANNER_ALLOW_UNAUTHENTICATED === '1';
+if (!API_KEY && !ALLOW_UNAUTHENTICATED) {
+  console.error(
+    '[adapt-a11y-scanner] refusing to start: set SCANNER_API_KEY, or set ' +
+      'SCANNER_ALLOW_UNAUTHENTICATED=1 to intentionally run without auth.',
+  );
+  process.exit(1);
+}
+
+// Messages runAdaptScan raises for invalid requests rather than infrastructure
+// failure. Kept explicit so a genuine server fault is never masked as a 400.
+const CLIENT_CORRECTABLE = [
+  'needs assignmentId',
+  'must be "question" or "assignment"',
+];
 
 const server = createServer(async (req, res) => {
   setSecurityHeaders(res);
@@ -22,13 +40,35 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // Request parsing and the scan itself are separated so their failures get
+  // different statuses: previously a Chromium crash, an unreachable
+  // remedy-server or an ADAPT 5xx all surfaced as 400, so a caller that sent a
+  // perfectly valid body could not tell its own mistake from a retryable
+  // server-side fault.
+  let scan: AdaptScanRequest;
   try {
-    const body = await readJson(req);
-    const scan = parseRequest(body);
+    scan = parseRequest(await readJson(req));
+  } catch (e) {
+    const message = (e as Error).message;
+    const status = (e as Error & { tooLarge?: boolean }).tooLarge ? 413 : 400;
+    json(res, status, { ok: false, error: message });
+    return;
+  }
+
+  try {
     const report = await runAdaptScan(scan);
     json(res, 200, { ok: report.exitCode === 0, ...report });
   } catch (e) {
-    json(res, 400, { ok: false, error: (e as Error).message });
+    const message = (e as Error).message;
+    // runAdaptScan also raises client-correctable configuration errors (e.g. a
+    // question scan in SPA mode without an assignmentId). Those are the
+    // caller's to fix, so they must not be reported as server faults.
+    if (CLIENT_CORRECTABLE.some((fragment) => message.includes(fragment))) {
+      json(res, 400, { ok: false, error: message });
+      return;
+    }
+    console.error('[adapt-a11y-scanner] scan failed:', message);
+    json(res, 500, { ok: false, error: message });
   }
 });
 
@@ -43,7 +83,14 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
     const chunk = Buffer.isBuffer(c) ? c : Buffer.from(c);
     total += chunk.length;
     if (total > MAX_REQUEST_BYTES) {
-      throw new Error(`Request body exceeds ${MAX_REQUEST_BYTES} bytes.`);
+      // Tagged rather than matched on message text: the 413 mapping below used
+      // to sniff for "exceeds", so a reworded message would have silently
+      // downgraded oversized requests to 400.
+      const err = new Error(`Request body exceeds ${MAX_REQUEST_BYTES} bytes.`) as Error & {
+        tooLarge?: boolean;
+      };
+      err.tooLarge = true;
+      throw err;
     }
     chunks.push(chunk);
   }

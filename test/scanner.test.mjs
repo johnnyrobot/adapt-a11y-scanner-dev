@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalize,
+  normalizeCore,
   mapImpact,
   parseRemedyResponse,
   buildRemedyHeaders,
@@ -131,4 +132,48 @@ test('parseRemedyResponse treats a missing/legacy shape as fail-closed (no silen
   const { findings, overallPassed } = parseRemedyResponse({ findings: [{ ruleId: 'x' }] });
   assert.equal(findings.length, 0); // we no longer read the legacy `findings` key
   assert.equal(overallPassed, false); // missing overall_passed => not passed
+});
+
+test('mapImpact canonicalizes casing and padding', () => {
+  // Exact comparison downgraded these to warnings, so critical findings
+  // slipped past the error-severity CI gate.
+  assert.equal(mapImpact('Critical'), 'error');
+  assert.equal(mapImpact(' SERIOUS '), 'error');
+  assert.equal(mapImpact('CRITICAL'), 'error');
+  assert.equal(mapImpact('Serious'), 'error');
+});
+
+test('mapImpact preserves an already-canonical error severity', () => {
+  // remedy-core emits `severity`, not `impact`; downgrading 'error' here would
+  // be a regression in the in-process path.
+  assert.equal(mapImpact('error'), 'error');
+  assert.equal(mapImpact('Error'), 'error');
+  assert.equal(mapImpact('warning'), 'warning');
+  assert.equal(mapImpact('moderate'), 'warning');
+});
+
+test('normalizeCore canonicalizes severity so critical findings gate the build', () => {
+  // The in-process path forwarded remedy-core's raw severity, while the gate
+  // compares against 'error' exactly -- so a critical finding exited 0.
+  const findings = normalizeCore([
+    { ruleId: 'image-alt', severity: 'critical', message: 'missing alt' },
+    { ruleId: 'link-name', severity: 'serious', message: 'no name' },
+    { ruleId: 'contrast', severity: 'moderate', message: 'low contrast' },
+  ]);
+  assert.deepEqual(
+    findings.map((f) => f.severity),
+    ['error', 'error', 'warning'],
+  );
+  // This is the exact predicate scanner.ts / job.ts / report.ts gate on.
+  assert.equal(findings.some((f) => f.severity === 'error'), true);
+});
+
+test('normalizeCore preserves an already-canonical error severity', () => {
+  const [finding] = normalizeCore([{ ruleId: 'x', severity: 'error', message: 'm' }]);
+  assert.equal(finding.severity, 'error');
+});
+
+test('normalizeCore defaults an absent severity to warning', () => {
+  const [finding] = normalizeCore([{ ruleId: 'x', message: 'm' }]);
+  assert.equal(finding.severity, 'warning');
 });

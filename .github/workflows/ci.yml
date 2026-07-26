@@ -10,6 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Don't leave the workflow token in .git/config: `npm ci` can run
+          # dependency lifecycle scripts, and nothing here needs Git auth after
+          # the checkout.
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
