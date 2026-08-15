@@ -39,7 +39,19 @@ docker build -t adapt-a11y-scanner .
 docker run --env-file .env adapt-a11y-scanner assignment 5678
 ```
 
-To run it as a one-shot job alongside a `libre-remedy-server` deployment, see
+This scanner is one of three repositories that make up the Remedy stack:
+
+| Repository | Role |
+|---|---|
+| `libretexts-remedy-server` | the engine — all checking and remediation behind `/v1/*` |
+| `libretexts-remedy-bridge` | CXone Expert page I/O (not needed to scan ADAPT) |
+| **`adapt-a11y-scanner`** | this repo — headless ADAPT rendering + scan |
+
+**To deploy all three together, follow `deploy/stack/README.md` in the
+`libretexts-remedy-server` repository.** That is the only compose file that
+wires the full stack, and it is the recommended starting point.
+
+To run this scanner as a one-shot job against a server you already have, see
 [`deploy/docker-compose.example.yml`](deploy/docker-compose.example.yml) (join the
 server's network, or point `REMEDY_ENDPOINT` at its public Caddy endpoint). The
 server must run its full `runtime` image — the `runtime-slim` target disables
