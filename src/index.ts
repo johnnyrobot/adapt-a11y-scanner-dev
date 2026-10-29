@@ -12,7 +12,7 @@
  * 2 usage, 3 fatal.
  */
 import { loadConfig } from './config.js';
-import { JobLifetime } from './lifecycle.js';
+import { JobLifetime, ShutdownError } from './lifecycle.js';
 import { runAdaptScan } from './job.js';
 
 function usage(): never {
@@ -34,7 +34,7 @@ async function main(): Promise<void> {
   }
 
   const lifetime = new JobLifetime(cfg.jobTimeoutMs);
-  const interrupt = () => lifetime.abort(new Error('Scanner shutting down'));
+  const interrupt = () => lifetime.abort(new ShutdownError());
   process.once('SIGTERM', interrupt);
   process.once('SIGINT', interrupt);
   try {

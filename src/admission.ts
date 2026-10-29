@@ -1,4 +1,4 @@
-import { JobLifetime } from './lifecycle.js';
+import { JobLifetime, ShutdownError } from './lifecycle.js';
 
 export class UnavailableError extends Error {
   constructor() { super('Scanner saturated or shutting down'); }
@@ -45,7 +45,7 @@ export class ScanAdmission {
 
   stop(): void {
     this.accepting = false;
-    for (const entry of this.jobs) entry.lifetime.abort(new Error('Scanner shutting down'));
+    for (const entry of this.jobs) entry.lifetime.abort(new ShutdownError());
   }
 
   get idle(): boolean { return this.jobs.size === 0; }

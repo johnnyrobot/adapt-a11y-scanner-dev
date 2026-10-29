@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { loadConfig } from './config.js';
-import { JobLifetime } from './lifecycle.js';
+import { JobLifetime, ShutdownError } from './lifecycle.js';
 import { ScanAdmission, UnavailableError } from './admission.js';
 import { runAdaptScan, type AdaptScanRequest } from './job.js';
 
@@ -65,7 +65,9 @@ const server = createServer(async (req, res) => {
   } catch (e) {
     const error = e as Error & { tooLarge?: boolean; clientInput?: boolean };
     const message = error.message;
-    if (e instanceof UnavailableError || message === 'Scanner shutting down') {
+    // Rejected/expired uploads must not keep draining outside admitted capacity.
+    if (e instanceof UnavailableError || lifetime.signal.aborted || error.tooLarge) res.shouldKeepAlive = false;
+    if (e instanceof UnavailableError || lifetime.signal.reason instanceof ShutdownError) {
       res.setHeader('retry-after', '5');
       json(res, 503, { ok: false, error: message });
     } else if (lifetime.signal.aborted) {

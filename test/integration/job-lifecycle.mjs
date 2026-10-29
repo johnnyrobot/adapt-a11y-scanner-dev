@@ -78,13 +78,19 @@ test('actual HTTP admission limits browser work and frees disconnected queued jo
   assert.ok(!h.calls.includes('/api/get-header-html/2'));assert.ok(!h.calls.includes('/api/get-header-html/3'));
 });
 
-for (const phase of ['login navigation','login fetch','enumeration','question navigation','frame readiness','math readiness','validation','retry sleep']) {
+for (const phase of ['login navigation','login fetch','enumeration','question navigation','frame readiness','math readiness','validation','retry sleep','login response body','enumeration response body','validation response body']) {
   test(`disconnect cancels actual ${phase} and prevents later downstream calls`, {timeout:15000}, async t=>{
     const login=phase.startsWith('login');
     const h=await harness(t,{...(login?{ADAPT_TOKEN:'',ADAPT_EMAIL:'synthetic@example.invalid',ADAPT_PASSWORD:'synthetic-password'}:{}),...(phase==='frame readiness'?{RENDER_MODE:'spa'}:{})});
-    let reached=false;
+    let reached=false, bodyClosed=false;
     h.setHandler((req,res)=>{
       const path=req.url;
+      if ((phase === 'login response body' && path === '/api/login') ||
+          (phase === 'enumeration response body' && path.includes('/questions/ids')) ||
+          (phase === 'validation response body' && path === '/validate')) {
+        reached = true; res.once('close', () => { bodyClosed = true; });
+        res.writeHead(200, { 'content-type': 'application/json' }); res.write('{"partial":'); return;
+      }
       const stop=(phase==='login navigation'&&path==='/login') || (phase==='login fetch'&&path==='/api/login') || (phase==='enumeration'&&path.includes('/questions/ids')) || (phase==='question navigation'&&path.includes('/get-header-html/1')) || (phase==='validation'&&path==='/validate');
       if(stop){reached=true;return;}
       if(phase==='frame readiness'&&path.includes('/questions/view/')){reached=true;res.setHeader('content-type','text/html');res.end('<!doctype html><title>Synthetic SPA without question frame</title>');return;}
@@ -97,13 +103,14 @@ for (const phase of ['login navigation','login fetch','enumeration','question na
     });
     const req=phase==='frame readiness'
       ? (()=>{const r=request(`${h.endpoint}/v1/adapt/scan`,{method:'POST',headers:{'x-api-key':'synthetic-key','content-type':'application/json'}});r.on('error',()=>{});r.end(JSON.stringify({mode:'question',id:1,assignmentId:42}));return r;})()
-      :h.disconnect(phase==='enumeration'?42:1,phase==='enumeration'?'assignment':'question');
+      :h.disconnect(phase.startsWith('enumeration')?42:1,phase.startsWith('enumeration')?'assignment':'question');
     await until(()=>reached);
     if(['math readiness','frame readiness','retry sleep'].includes(phase))await pause(650);
     if (phase === 'math readiness') assert.ok(h.calls.some(path => path.startsWith('/mathjax/MathJax.js')), 'actual pinned loader requested');
     const previous=[...h.calls];
     const owned=h.descendants();assert.ok(owned.length>0);
     req.destroy();
+    if (phase.endsWith('response body')) await until(() => bodyClosed);
     // A successful next request proves actual capacity has been released.
     h.setHandler(h.defaultHandler);
     await pause(150);
@@ -186,4 +193,23 @@ test('disconnect retains the actual slot through forced browser cleanup before s
   assert.ok(Date.now()-start>=4800);await h.assertExited(owned);
   assert.equal(h.calls.filter(p=>p.includes('/get-header-html/2')).length,1);
   assert.equal(h.calls.filter(p=>p.includes('/get-header-html/3')).length,0);
+});
+
+test('deadline closes a partial incoming upload and releases capacity without browser work', { timeout: 8000 }, async t => {
+  const h = await harness(t, { SCANNER_JOB_TIMEOUT_MS: '500' });
+  const upload = request(`${h.endpoint}/v1/adapt/scan`, { method: 'POST', headers: {
+    'x-api-key': 'synthetic-key', 'content-type': 'application/json', 'content-length': '10000',
+  } });
+  upload.on('error', () => {});
+  let closed = false; upload.once('close', () => { closed = true; });
+  const responded = once(upload, 'response');
+  upload.write('{"mode":');
+  const [response] = await responded;
+  let body = ''; for await (const chunk of response) body += chunk;
+  assert.equal(response.statusCode, 504); assert.equal(JSON.parse(body).ok, false);
+  assert.equal(response.headers.connection, 'close'); await until(() => closed);
+  assert.deepEqual(h.calls, []); assert.deepEqual(h.browserPids(), []);
+  // Another body can be admitted immediately; invalid JSON stays a client error.
+  const next = await fetch(`${h.endpoint}/v1/adapt/scan`, { method: 'POST', headers: { 'x-api-key': 'synthetic-key' }, body: '{' });
+  assert.equal(next.status, 400); assert.deepEqual(h.calls, []);
 });

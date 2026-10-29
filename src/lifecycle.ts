@@ -1,3 +1,7 @@
+export class ShutdownError extends Error {
+  constructor() { super('Scanner shutting down'); }
+}
+
 /** One absolute deadline, created at admission and retained while queued. */
 export class JobLifetime {
   readonly controller = new AbortController();

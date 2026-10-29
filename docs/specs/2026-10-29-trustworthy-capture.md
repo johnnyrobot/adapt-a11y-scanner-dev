@@ -30,7 +30,10 @@ Retain navigation `networkidle` and completed content-document readiness. A true
 no-math/no-library document is valid. Native MathML, math source scripts, rendered
 MathJax nodes, standard TeX delimiters (`\(`, `\[`, `$$`), a MathJax loader or
 configuration, or a MathJax global requires supported completion. Unknown majors
-fail explicitly. No fixed sleep or temporary queue-idle signal establishes ready.
+fail explicitly. No fixed sleep or temporary queue-idle signal establishes ready. A host-side
+math deadline closes the actual page if readiness does not finish; question code
+replacing page timers cannot suppress it. Later assignment questions can proceed
+in the same browser after that page is closed.
 
 For v2, observe the official replayable startup `End` hook, then queue a fresh
 `Typeset` of the content body and a completion callback. Inspect all resulting jax

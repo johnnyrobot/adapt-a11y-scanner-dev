@@ -40,7 +40,7 @@ CLI arguments; supply that runtime policy before using it.
 
 ```bash
 docker build -t adapt-a11y-scanner .
-docker run --env-file .env adapt-a11y-scanner assignment 5678
+docker run --init --env-file .env adapt-a11y-scanner assignment 5678
 ```
 
 This scanner is one of three repositories that make up the Remedy stack:
@@ -111,8 +111,9 @@ rejects that mode instead of claiming it can cancel it.
 Client disconnect, deadline and SIGINT/SIGTERM abort network requests/retry waits
 and close the actual browser. A job retains its active slot until owned browser
 process cleanup finishes. Browser startup is bounded to five seconds; cooperative
-cleanup gets five seconds before Playwright kills and waits for its owned browser
-process tree. Browser control listens only on loopback. There is no guessed PID,
+cleanup gets five seconds before the scanner kills and waits for its owned browser
+process group. A private worker is owned before Playwright startup, including a
+launch that never returns a browser handle. Browser control listens only on loopback. There is no guessed PID,
 global process kill, sandbox fallback or background-job protocol.
 
 Shutdown first stops admission, cancels queued/active jobs, sends truthful 503
@@ -122,7 +123,9 @@ the stack's stop grace **above 15 seconds** and its synchronous HTTP proxy/clien
 timeouts above the chosen total job deadline plus cleanup allowance (five
 seconds, or ten if shutdown interrupts browser startup). Multiple replicas each
 have independent admission limits; the downstream Server owner must size its
-capacity accordingly. This repo does not change or validate the deployed stack.
+capacity accordingly. The local Compose example uses `init: true` and a 20-second stop grace. The
+full-stack owner must carry these settings into the deployed stack; this repo
+does not validate that stack.
 
 ### Chromium sandbox prerequisites
 
@@ -131,6 +134,10 @@ non-root user on Linux with user/PID namespaces and seccomp available. A sandbox
 startup failure is returned to the caller; there is no automatic unsandboxed
 retry. `CHROMIUM_NO_SANDBOX=1` or `true` deliberately disables this isolation;
 it is not a production deployment remedy for missing host prerequisites.
+
+Run the Linux container with a reaping init (`docker run --init` or Compose
+`init: true`). The scanner refuses Linux PID1 execution because orphaned browser
+processes must be reaped before capacity can be released.
 
 The Dockerfile uses non-root `pwuser` and a browser image matching the locked
 Playwright version. Container execution also needs a namespace-capable seccomp
@@ -205,7 +212,7 @@ codes, containerization.
   the libretexts-remedy-server `all_violations`/`overall_passed` schema.
 
 ## Requirements
-- Node ≥ 20 (uses built-in `fetch`/`FormData`/`node:test`)
+- macOS or Linux with Node ≥ 20 (uses built-in `fetch`/`FormData`/`node:test`)
 - A reachable ADAPT instance + a service-account token
 - A running **remedy-server** with an API key (`SCAN_MODE=http`), or
   `@libretexts/remedy-core` installed (`SCAN_MODE=in-process`, dev-only)

@@ -9,9 +9,10 @@
  *
  * One browser is reused across many questions for batch efficiency.
  */
-import { chromium, type Browser, type BrowserServer, type BrowserContext, type Frame, type Page, type Response } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Frame, type Page, type Response } from 'playwright';
 import type { Config } from './config.js';
 import type { JobLifetime } from './lifecycle.js';
+import { OwnedBrowser } from './owned-browser.js';
 
 export interface RenderedQuestion {
   url: string;
@@ -45,9 +46,9 @@ export function buildTokenCookie(
 
 export class AdaptRenderer {
   private browser?: Browser;
-  private browserServer?: BrowserServer;
+  private owner?: OwnedBrowser;
   private closing?: Promise<void>;
-  private readonly abort = () => { void this.close(); };
+  private readonly abort = () => { void this.close().catch(() => {}); };
   private ctx?: BrowserContext;
   private token?: string;
 
@@ -56,21 +57,25 @@ export class AdaptRenderer {
   private timeout(cap: number): number { return this.lifetime?.timeout(cap) ?? cap; }
 
   async init(): Promise<void> {
-    // Keep the Chromium sandbox ON by default (run as non-root pwuser in the
-    // container). Only disable it via CHROMIUM_NO_SANDBOX when running as root (M6).
-    const args = this.cfg.chromiumNoSandbox ? ['--no-sandbox'] : [];
     this.lifetime?.check();
-    this.browserServer = await chromium.launchServer({ host: '127.0.0.1', handleSIGTERM: false, handleSIGINT: false, handleSIGHUP: false, chromiumSandbox: !this.cfg.chromiumNoSandbox, args, timeout: this.timeout(Math.min(5000, this.cfg.navTimeoutMs)) });
+    const startupTimeout = this.timeout(Math.min(5000, this.cfg.navTimeoutMs));
+    // Own a process group and install cancellation before awaiting any launch.
+    this.owner = new OwnedBrowser(!this.cfg.chromiumNoSandbox, startupTimeout);
     this.lifetime?.signal.addEventListener('abort', this.abort, { once: true });
     try {
+      const endpoint = await this.owner.wsEndpoint();
       this.lifetime?.check();
-      this.browser = await chromium.connect(this.browserServer.wsEndpoint(), { timeout: this.timeout(this.cfg.navTimeoutMs) });
+      this.browser = await chromium.connect(endpoint, { timeout: this.timeout(startupTimeout) }).catch(() => {
+        throw new Error('Browser startup connection failed');
+      });
       this.ctx = await this.browser.newContext();
+      this.owner.started();
       this.token = await this.resolveToken();
       await this.ctx.addCookies([buildTokenCookie(this.token, this.cfg.adaptBaseUrl)]);
     } catch (e) {
       // L2: don't leak the browser if a later init step (e.g. login) throws.
       await this.close();
+      this.lifetime?.check();
       throw e;
     }
   }
@@ -154,7 +159,10 @@ export class AdaptRenderer {
       }
 
       this.lifetime?.check();
-      await this.waitForMathJax(target);
+      // Enforce the math phase in Node: page code can replace its own timers.
+      const mathDeadline = setTimeout(() => { void page.close().catch(() => {}); }, this.timeout(this.cfg.mathjaxTimeoutMs));
+      try { await this.waitForMathJax(target); }
+      finally { clearTimeout(mathDeadline); }
       this.lifetime?.check();
       // Re-check identities after readiness: scripts may navigate while typesetting.
       this.assertDocument(documents.get(page.mainFrame()), page.url(), url, 'outer capture');
@@ -331,26 +339,16 @@ export class AdaptRenderer {
   }
 
   private async closeOwnedBrowser(): Promise<void> {
-    // launchServer owns the child. Playwright kill() kills its process tree and
-    // waits for exit; never release job capacity just because a promise raced.
-    const server = this.browserServer;
-    let killError: unknown;
-    const killTimer = server ? setTimeout(() => {
-      void server.kill().catch(error => { killError = error; });
-    }, 5000) : undefined;
     try {
-      try { await this.ctx?.close(); } catch { /* browser close still required */ }
-      if (server) {
-        try { await server.close(); } catch { await server.kill(); }
-      }
-      else await this.browser?.close();
-      if (killError) throw killError;
+      // Closing the owned worker closes the real browser, which also interrupts
+      // contexts and any pending protocol operation. Never await a wedged
+      // context before starting the owned-process cleanup allowance.
+      await this.owner?.close();
     } finally {
-      clearTimeout(killTimer);
       this.lifetime?.signal.removeEventListener('abort', this.abort);
       this.ctx = undefined;
       this.browser = undefined;
-      this.browserServer = undefined;
+      this.owner = undefined;
     }
   }
 }
