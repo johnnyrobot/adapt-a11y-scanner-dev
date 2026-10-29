@@ -29,7 +29,7 @@ async function namespace(pid, kind) {
 async function processEvidence(pid) {
   const status = await readFile(`/proc/${pid}/status`, 'utf8');
   const field = name => {
-    const value = status.match(new RegExp(`^${name}:\\s*(.+)$`, 'm'))?.[1];
+    const value = status.split('\n').find(line => line.startsWith(`${name}:`))?.slice(name.length + 1).trim();
     assert.ok(value, `missing ${name} for PID ${pid}`);
     return value.trim();
   };
@@ -104,9 +104,6 @@ test('real renderer enables the sandbox by default', { timeout: 90000 }, async t
           // browser; renderQuestion closes its own page after capturing it.
           const witness = await browser.contexts()[0].newPage();
           await witness.goto(`${base}/api/get-header-html/1`);
-          const captured = await renderer.renderQuestion(1);
-          assert.match(captured.html, /<p id="question">Synthetic no-math question<\/p>/);
-          record.capturedBytes = Buffer.byteLength(captured.html);
           if (isLinux && !disabled) {
             const { processInfo } = await session.send('SystemInfo.getProcessInfo');
             const browserProcess = processInfo.find(p => p.type === 'browser');
@@ -129,6 +126,9 @@ test('real renderer enables the sandbox by default', { timeout: 90000 }, async t
             }
             assert.equal(evidence.parent.seccomp, '0', 'native CI proof must not rely on inherited container seccomp');
           }
+          const captured = await renderer.renderQuestion(1);
+          assert.match(captured.html, /<p id="question">Synthetic no-math question<\/p>/);
+          record.capturedBytes = Buffer.byteLength(captured.html);
         } finally {
           await renderer.close();
           if (browser) assert.equal(browser.isConnected(), false, 'renderer must release the browser');
