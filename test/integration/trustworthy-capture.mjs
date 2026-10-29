@@ -17,6 +17,7 @@ for (const [path, digest] of [
   ['MathJax.js', 'f3bbf1b342e93173df117394fed9b914afc1506eee6c04b92edb528d09893048'],
   ['config/TeX-AMS_HTML.js', '02a6199a83a04869684c04bad7cdbb250aa620eb263991ce8031d585dfc8dde3'],
   ['LICENSE', 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30'],
+  ['extensions/tex2jax.js', 'd8cf75b0b0a0f2c2891d5cea8ff2e0e326b263e64b179178eab6f2783cc505b9'],
 ]) assert.equal(createHash('sha256').update(await readFile(new URL('../../node_modules/mathjax/' + path, import.meta.url))).digest('hex'), digest);
 
 
@@ -141,6 +142,51 @@ test('trustworthy capture through actual Chromium and scan job', { timeout: 9000
         assert.ok(captured.includes('<svg'), 'actual captured SVG required'); assert.match(captured, /MathJax-Element-2-Frame/); captured = '';
       }
       process.env.RENDER_MODE = 'iframe';
+    });
+    await t.test('valid real math preserves intentionally ignored literal delimiters', async () => {
+      document = mathDocument('', '', String.raw`<p>\(x^2+1\)</p><span class="tex2jax_ignore"><b>\(literal example\)</b></span>`);
+      const report = await scan();
+      assert.equal(report.exitCode, 0, report.results[0]?.error);
+      assert.ok(captured.includes('<svg'), 'actual typeset math required');
+      assert.match(captured, /literal example/);
+    });
+    await t.test('real tex2jax skip tags and literal-only documents remain valid', async () => {
+      const literals = ['script', 'noscript', 'style', 'textarea', 'pre', 'code', 'annotation', 'annotation-xml']
+        .map(tag => `<${tag}>\\(literal example\\)</${tag}>`).join('');
+      for (const source of [String.raw`<p>\(x\)</p>` + literals, literals, String.raw`<span class="tex2jax_ignore">\(literal only\)</span>`]) {
+        document = mathDocument('', '', source);
+        const report = await scan(); assert.equal(report.exitCode, 0, report.results[0]?.error);
+        assert.match(captured, /literal/);
+      }
+      document = literals + String.raw`<span class="tex2jax_ignore">\(literal without a library\)</span>`;
+      const report = await scan(); assert.equal(report.exitCode, 0, report.results[0]?.error);
+    });
+    await t.test('real custom ignore/process config preserves nested overrides and skipped subtree closure', async () => {
+      for (const [config, source, expectsSvg] of [
+        ["tex2jax:{ignoreClass:'literal-[0-9]+',processClass:'process-math'}", String.raw`<div class="literal-42">\(literal\)<b class="process-math">\(x\)<i class="literal-7">\(nested literal\)</i></b></div>`, true],
+        ['', String.raw`<code>\(literal\)<b class="tex2jax_process">\(still literal\)</b></code>`, false],
+        ['', String.raw`<code class="tex2jax_process">\(x\)</code>`, true],
+        ["tex2jax:{skipTags:['script','section']}", String.raw`<section>\(literal\)</section><code>\(x\)</code>`, true],
+        ["delayStartupUntil:'configured',tex2jax:{ignoreClass:'literal'}", String.raw`<div class="literal">\(literal only\)</div>`, false],
+      ]) {
+        document = mathDocument(config, config.includes('delayStartupUntil') ? '<script>setTimeout(()=>MathJax.Hub.Configured(),900)</script>' : '', source);
+        const report = await scan(); assert.equal(report.exitCode, 0, report.results[0]?.error);
+        assert.equal(captured.includes('<svg'), expectsSvg, 'actual library honors process/skip semantics');
+      }
+    });
+    await t.test('excluded literals cannot hide unresolved math in processed text', async () => {
+      for (const [config, source] of [
+        ['', String.raw`<p>\(x\)</p><span class="tex2jax_ignore">\(literal\)</span><p>\(unresolved</p>`],
+        ['', String.raw`<div class="tex2jax_ignore">\(literal\)<b class="tex2jax_process">\(unresolved</b></div>`],
+        ['', String.raw`<code class="tex2jax_process">\(unresolved</code>`],
+        ['', String.raw`<span class="tex2jax_ignore-extra">\(unresolved</span>`],
+        ["tex2jax:{ignoreClass:'literal',processClass:'process-math'}", String.raw`<div class="literal"><span class="process-math">\(unresolved</span></div>`],
+        ["tex2jax:{ignoreClass:'',skipTags:['script']}", String.raw`<code>\(unresolved</code>`],
+      ]) {
+        const before = validations; document = mathDocument(config, '', source);
+        const report = await scan(); assert.equal(report.exitCode, 1); assert.equal(report.totals.scanned, 0);
+        assert.match(report.results[0].error, /readiness/); assert.equal(validations, before);
+      }
     });
     await t.test('delayed official startup and idle-before-typeset complete real rendering', async () => {
       for (const [config, suffix] of [

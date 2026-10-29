@@ -78,7 +78,16 @@ export class OwnedBrowser {
     const pid = this.child.pid;
     if (this.groupGone || !pid) return false; // spawn failed: no owned group was created
     try { process.kill(-pid, signal); return true; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') { this.groupGone = true; return false; } throw error; }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ESRCH') { this.groupGone = true; return false; }
+      // Darwin can report EPERM while a killed group still has exiting members.
+      // This is NOT proof of disappearance or of signal delivery. Keep ownership
+      // and wait for ESRCH; a genuinely inaccessible live group cannot release
+      // capacity and will fail the enclosing shutdown bound.
+      if (code === 'EPERM') return true;
+      throw error;
+    }
   }
 
   private async closeGroup(): Promise<void> {
