@@ -20,6 +20,12 @@ services:
   scanner:
     init: true               # reap owned browser descendants after cancellation
     stop_grace_period: 20s    # scanner shutdown bound is 15s
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      # Set an absolute host path to this repo's reviewed amd64 policy.
+      - seccomp:${SCANNER_SECCOMP_PROFILE:?set an absolute path to chromium-seccomp-amd64.json}
+    shm_size: 1gb
     build: ..                # builds the image from this repo's Dockerfile
     env_file: ../.env        # ADAPT_BASE_URL, ADAPT_TOKEN, REMEDY_API_KEY, ...
     environment:

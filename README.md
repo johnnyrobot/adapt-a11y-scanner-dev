@@ -32,15 +32,17 @@ node dist/index.js question 1234
 node dist/index.js assignment 5678
 ```
 
-Container build/CLI example (runtime policy setup required):
+Linux amd64 container build/CLI example (runtime policy setup required):
 
 First configure the [Chromium sandbox prerequisites](#chromium-sandbox-prerequisites),
 including a namespace-capable seccomp policy. The run line below illustrates
 CLI arguments; supply that runtime policy before using it.
 
 ```bash
-docker build -t adapt-a11y-scanner .
-docker run --init --env-file .env adapt-a11y-scanner assignment 5678
+docker build --platform linux/amd64 -t adapt-a11y-scanner .
+docker run --init --cap-drop ALL --security-opt no-new-privileges=true \
+  --security-opt seccomp="$PWD/deploy/chromium-seccomp-amd64.json" \
+  --shm-size 1g --stop-timeout 20 --env-file .env adapt-a11y-scanner assignment 5678
 ```
 
 This scanner is one of three repositories that make up the Remedy stack:
@@ -146,6 +148,13 @@ Do not disable sandboxing or host-wide security to make it launch. Native Linux
 CI proves the real renderer's launch arguments, namespace/seccomp isolation and
 synthetic capture; shipping-container and Compose compatibility require separate
 validation before deployment.
+
+The [Linux amd64 shipping-runtime gate](docs/shipping-runtime.md) builds the
+actual production Dockerfile and tests its renderer/job/API/CLI inside the image
+under the reviewed namespace-capable policy, cap_drop ALL, no-new-privileges and
+init. It compares renderer filters/namespaces against the container baseline and
+tests Docker stop forwarding under a 20-second grace. Its recorded CI evidence
+is component proof; the Server-owned assembled stack still needs validation.
 
 ## Trustworthy capture
 
