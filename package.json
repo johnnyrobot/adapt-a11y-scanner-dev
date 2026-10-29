@@ -13,7 +13,7 @@
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test \"test/**/*.test.mjs\"",
-    "test:browser": "npm run build && DOTENV_CONFIG_PATH=/dev/null node --test test/integration/renderer-sandbox.mjs test/integration/scan-contracts.mjs"
+    "test:browser": "npm run build && DOTENV_CONFIG_PATH=/dev/null node --test test/integration/renderer-sandbox.mjs test/integration/scan-contracts.mjs test/integration/trustworthy-capture.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
@@ -21,6 +21,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.7.0",
+    "mathjax": "2.7.3",
     "typescript": "^5.6.0"
   },
   "engines": {

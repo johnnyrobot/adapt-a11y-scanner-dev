@@ -45,7 +45,7 @@ jobs:
       - run: npm ci
       - run: npx --no-install playwright install --with-deps chromium
       - name: Verify real renderer sandbox and capture
-        run: timeout 120s npm run test:browser
+        run: timeout 240s npm run test:browser
         env:
           SANDBOX_LINUX_REQUIRED: '1'
           SANDBOX_EVIDENCE_PATH: sandbox-evidence.json

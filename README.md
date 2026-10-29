@@ -104,6 +104,15 @@ CI proves the real renderer's launch arguments, namespace/seccomp isolation and
 synthetic capture; shipping-container and Compose compatibility require separate
 validation before deployment.
 
+## Trustworthy capture
+
+Question captures require successful HTML at the exact requested ADAPT routes,
+including the SPA content frame. HTTP error documents and login/wrong-route
+redirects fail before Remedy. Real MathJax v2 startup and a queued Typeset must
+complete; incomplete math, unsupported majors and readiness timeouts fail the
+question. Genuine no-math/no-library questions remain valid. See the
+[LT-118/119 contract and fixture provenance](docs/specs/2026-10-29-trustworthy-capture.md).
+
 ## How it authenticates
 ADAPT's API guard is JWT (`tymon/jwt-auth`); the SPA reads the JWT from a cookie
 named `token`. The bridge sets that cookie from `ADAPT_TOKEN` (or mints one via
