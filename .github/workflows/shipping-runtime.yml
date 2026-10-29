@@ -85,6 +85,17 @@ jobs:
           test "$elapsed" -lt 15000
           test "$(docker inspect --format '{{.State.ExitCode}}' scanner-stop)" = 0
           test -s runtime-evidence/stop-client.json
+      - name: Diagnose failed launch under the unchanged shipping policy
+        if: failure()
+        run: |
+          docker run --rm --init --network none --cap-drop ALL \
+            --security-opt no-new-privileges=true \
+            --security-opt seccomp="$PWD/deploy/chromium-seccomp-amd64.json" \
+            --shm-size 1g --stop-timeout 20 \
+            --mount type=bind,src="$PWD/test",dst=/app/test,readonly \
+            --mount type=bind,src="$PWD/runtime-evidence",dst=/evidence \
+            --env DOTENV_CONFIG_PATH=/dev/null --entrypoint node scanner-proof:${GITHUB_SHA} \
+            test/integration/container-launch-diagnostic.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
