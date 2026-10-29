@@ -8,6 +8,60 @@ ADAPT renders questions client-side (Vue SPA + MathJax v2), so a static fetch
 gets an empty shell. This bridge drives a real headless browser, waits for math
 to typeset, captures the question's actual DOM, and hands it to Remedy.
 
+Scanner is the ADAPT rendering/scan component. It does not call CXone or Bridge,
+apply fixes, sign reviewer assertions, or restore CXone pages. Its ADAPT/Server
+configuration is independent of the Bridge's CXone credentials and write gates.
+The surrounding integration retains those capabilities in the maintained stack.
+
+## Integration scope and rollout ownership
+
+The handoff target is the **full integration in one maintained deployment
+package**, with review-only as an **optional** rollout mode. LibreTexts chooses
+rollout timing. This does not require an engine-only or review-only first
+rollout, a separate build, or a separate data format.
+
+Implementation delivery, a tested component profile, and production writes
+being enabled are separate states. **Automatic CXone writes remain gated** on
+vendor atomicity/conditional-write confirmation and authorized validation by
+**LibreTexts' integration/deployment team**. That is an unresolved integration
+requirement, not a Johnny approval checkpoint. Signing, apply, restore and
+recovery paths remain part of the full integration; optional review-only use
+does not remove them. This README neither enables writes nor certifies a
+full-write production rollout.
+
+## Tested NON-RELEASE candidate
+
+The exact Linux amd64 component candidate is:
+
+```bash
+docker pull --platform linux/amd64 ghcr.io/johnnyrobot/adapt-a11y-scanner-dev-candidate@sha256:00ab363669ccc7ae50fe7fc79286508af5923d3326d397f87cff91ee76e379a6
+```
+
+Source: [`1541bb8f3962553b65dab7bfd5aeb429354a8a4f`](https://github.com/johnnyrobot/adapt-a11y-scanner-dev/commit/1541bb8f3962553b65dab7bfd5aeb429354a8a4f).
+[Candidate run 40901392425](https://github.com/johnnyrobot/adapt-a11y-scanner-dev/actions/runs/40901392425)
+passed 73 helper checks, 74 native browser checks, 70 initial image checks and
+70 repeated checks against the exact pulled registry digest, with no failures
+or skips. The run observed public anonymous pull access.
+[Proof artifact / candidate.json](https://github.com/johnnyrobot/adapt-a11y-scanner-dev/actions/runs/40901392425/artifacts/12908759433)
+records the source, base/input hashes, visibility and manifest/config identities.
+The pull digest above is the **registry manifest digest**, not an image config ID.
+Retain the record, proof and reviewed profile with the deployment bundle.
+
+Use the reviewed [amd64 seccomp file](deploy/chromium-seccomp-amd64.json), SHA-256
+`d4447d241bf9c65e1698fc8508438c128dc000e3b0519b8e12e4afa4c8ae5d44`, with all
+settings in the [shipping-runtime guide](docs/shipping-runtime.md): image USER
+`pwuser`/UID 1000, reaping init, `cap_drop: [ALL]`, `no-new-privileges`, 1 GiB
+shared memory and 20-second stop grace. Leave sandbox opt-out and unauthenticated
+mode unset. The proof requires an added renderer seccomp filter and distinct
+user/PID namespaces, not merely inherited container filtering.
+
+This is a **NON-RELEASE component**, not an assembled-stack release or a live
+ADAPT compatibility claim. The tested host was Ubuntu 22.04/Linux x86_64 with
+Docker; arm64, rootless/userns-remap, other container engines and target hosts
+remain unverified. A changed image/profile/host needs fresh proof. Later
+documentation commits do not change this candidate's source identity or
+republish it. See the [candidate provenance/pull guide](docs/candidate-image.md).
+
 ```
 ADAPT  ──question / assignment id──►  adapt-a11y-scanner
                                        1. service-account login → JWT cookie
@@ -19,31 +73,32 @@ ADAPT  ──question / assignment id──►  adapt-a11y-scanner
 
 ## Quick start
 
-```bash
-cp .env.example .env        # fill in ADAPT_BASE_URL, ADAPT_TOKEN, REMEDY_ENDPOINT, REMEDY_API_KEY
-npm install
-npx playwright install chromium   # local browser (the Docker image bundles it)
-npm run build
-
-# scan one question
-node dist/index.js question 1234
-
-# scan every question in an assignment (gates CI: exit 1 if any errors)
-node dist/index.js assignment 5678
-```
-
-Linux amd64 container build/CLI example (runtime policy setup required):
-
-First configure the [Chromium sandbox prerequisites](#chromium-sandbox-prerequisites),
-including a namespace-capable seccomp policy. The run line below illustrates
-CLI arguments; supply that runtime policy before using it.
+Start with local checks; these do not contact a live ADAPT or Remedy instance.
+Prerequisites: macOS or Linux, Node >=20, npm and Python 3. Native CI uses Node 22.
 
 ```bash
-docker build --platform linux/amd64 -t adapt-a11y-scanner .
-docker run --init --cap-drop ALL --security-opt no-new-privileges=true \
-  --security-opt seccomp="$PWD/deploy/chromium-seccomp-amd64.json" \
-  --shm-size 1g --stop-timeout 20 --env-file .env adapt-a11y-scanner assignment 5678
+npm ci
+npm run typecheck
+DOTENV_CONFIG_PATH=/dev/null npm test
 ```
+
+For the actual renderer/job/API tests, install the locked browser and run the
+synthetic fixture suite:
+
+```bash
+npx --no-install playwright install chromium
+npm run test:browser
+```
+
+Linux also needs Playwright's system dependencies and sandbox prerequisites.
+The candidate already includes its matching browser. Follow the shipping guide
+for its reviewed runtime settings; a local rebuild has a new image identity and
+needs its own proof.
+
+Before scanning an approved environment, configure the names below using your
+secret/config mechanism. `.env.example` is a configuration template, not a
+verified target. Service-token issuance/rotation and endpoint authorization
+belong to the deployment team. Do not put secrets in source, logs or reports.
 
 This scanner is one of three repositories that make up the Remedy stack:
 
@@ -53,9 +108,12 @@ This scanner is one of three repositories that make up the Remedy stack:
 | `libretexts-remedy-bridge` | CXone Expert page I/O (not needed to scan ADAPT) |
 | **`adapt-a11y-scanner`** | this repo — headless ADAPT rendering + scan |
 
-**To deploy all three together, follow `deploy/stack/README.md` in the
-`libretexts-remedy-server` repository.** That is the only compose file that
-wires the full stack, and it is the recommended starting point.
+The Server owner maintains the
+[assembled-stack integration/deployment guide](https://github.com/johnnyrobot/libretexts-remedy-server-dev/blob/main/deploy/stack/README.md).
+The assembled deployment bundle must include reviewed service/patch pins,
+networks, preflight, storage/backups, upgrades and rollback. The current Scanner candidate
+does not approve provisional stack configuration; an assembled-stack/target-host
+proof and reviewed backup/upgrade/rollback handoff remain release requirements.
 
 To run this scanner as a one-shot job against a server you already have, see
 [`deploy/docker-compose.example.yml`](deploy/docker-compose.example.yml) (join the
@@ -72,17 +130,20 @@ server must run its full `runtime` image — the `runtime-slim` target disables
 | `ADAPT_TOKEN` | **Preferred** — service-account JWT (set as ADAPT's `token` cookie) |
 | `ADAPT_EMAIL`/`ADAPT_PASSWORD` | Fallback login (dev/bootstrap only — issue a token in prod) |
 | `RENDER_MODE` | `iframe` (render `/api/get-header-html/{id}` directly, fast) or `spa` |
-| `SCAN_MODE` | `http` (POST DOM to remedy-server) or `in-process` (bundled remedy-core, **dev-only**) |
+| `SCAN_MODE` | `http` (POST DOM to remedy-server) or `in-process` (optional remedy-core, **dev CLI-only**) |
 | `REMEDY_ENDPOINT` | remedy-server URL when `SCAN_MODE=http` |
 | `REMEDY_API_KEY` | **Required for `http`** — remedy-server API key, sent as `X-API-Key` (must equal the server's `APP_API_KEY`) |
+| `SCANNER_API_KEY` | required for authenticated HTTP scan requests; separate from ADAPT and Remedy credentials |
+| `SCANNER_HOST` / `SCANNER_PORT` | HTTP bind address/port (defaults `0.0.0.0` / `5176`); expose only to trusted callers |
+| `SCANNER_MAX_REQUEST_BYTES` | maximum HTTP request body, default `100000` bytes |
 | `SCANNER_MAX_ACTIVE_JOBS` / `SCANNER_MAX_QUEUED_JOBS` | per-process HTTP admission limits (defaults `1` / `8`, finite positive integers) |
 | `SCANNER_JOB_TIMEOUT_MS` | total admitted-job deadline, including queue wait (default `900000` ms) |
-| `REMEDY_TIMEOUT_MS` | max wait for the synchronous remedy scan (default `240000`) |
+| `REMEDY_TIMEOUT_MS` | per-attempt synchronous validation timeout, default `240000` ms, capped by remaining total budget |
 | `CHROMIUM_NO_SANDBOX` | deliberate sandbox opt-out (`1` or `true`); leave unset for sandboxed non-root execution |
-| `MATHJAX_TIMEOUT_MS` / `NAV_TIMEOUT_MS` | render/wait tuning |
+| `MATHJAX_TIMEOUT_MS` / `NAV_TIMEOUT_MS` | readiness/navigation phase limits, defaults `20000` / `30000` ms, capped by total budget |
 
 ### Two scan modes
-- **`http`** (default, recommended, **production**): the bridge POSTs the
+- **`http`** (default, supported candidate mode): Scanner POSTs the
   rendered HTML to a running **remedy-server** (`POST /v1/validate/html`,
   authenticated with `X-API-Key`) and stays a small stateless renderer. Scales
   independently; no Remedy code bundled. The response mapping in
@@ -91,6 +152,37 @@ server must run its full `runtime` image — the `runtime-slim` target disables
 - **`in-process`** (**dev-only**): imports `@libretexts/remedy-core` and scans
   in the same process. Not wired for production transfer — you must install/link
   that package yourself (it is not a published dependency).
+
+### API, CLI and readiness
+
+After configuring an approved environment, `npm run serve` starts the HTTP API;
+the container service entrypoint is `node dist/server.js`. To bind a local
+operator instance explicitly, use `SCANNER_HOST=127.0.0.1 npm run serve`.
+`POST /v1/adapt/scan` requires `X-API-Key` matching `SCANNER_API_KEY` and a JSON
+body such as `{"mode":"question","id":1234}` or
+`{"mode":"assignment","id":5678}`. SPA question requests also require
+`assignmentId`. Missing/wrong request API keys yield 401. Keep
+`SCANNER_ALLOW_UNAUTHENTICATED` unset for the supported profile; it is an explicit
+development escape hatch, not a deployment option.
+
+`GET /healthz` is unauthenticated and reports whether admission is accepting
+work (200/`ok: true`, or 503 during shutdown). It does not prove spare capacity,
+ADAPT login, question readiness or downstream validator availability. A completed
+HTTP 200 scan can still have `ok: false`; consume `exitCode`, totals and results.
+Request errors use 400/413, fatal job failures 500, overload/shutdown 503
+and deadline expiry 504. Retry and cancellation rules are below.
+
+CLI usage after `npm run build`:
+
+```text
+node dist/index.js question QUESTION_ID [ASSIGNMENT_ID]
+node dist/index.js assignment ASSIGNMENT_ID
+```
+
+Exit codes are 0 for passing scans, 1 for unsuccessful/no-work reports, 2 for
+usage errors and 3 for fatal failures. CLI output is JSON for completed reports;
+fatal errors go to stderr. The CLI does not require `SCANNER_API_KEY`; ADAPT and
+Remedy authentication still apply.
 
 ### HTTP admission, cancellation and shutdown
 
@@ -167,7 +259,7 @@ question. Genuine no-math/no-library questions remain valid. See the
 
 ## How it authenticates
 ADAPT's API guard is JWT (`tymon/jwt-auth`); the SPA reads the JWT from a cookie
-named `token`. The bridge sets that cookie from `ADAPT_TOKEN` (or mints one via
+named `token`. Scanner sets that cookie from `ADAPT_TOKEN` (or mints one via
 `/api/login`). **In production, issue a dedicated service-account token** rather
 than using a human password.
 
@@ -199,26 +291,28 @@ verification. Fixture generation used real Server orchestration/serialization
 with synthetic tool adapters, not live tools or HTTP. Fixture `contract_id` is
 documentation metadata, not a required field in a Server response.
 
-## What this repo is — and what your team still owns
+## Release limits and integration handoff
 
-This is a **working, deployable bridge** and the integration spec — *not* a
-turnkey product feature. It was extracted from a verified proof-of-concept
-(see [`docs/INTEGRATION.md`](docs/INTEGRATION.md) for the evidence and findings).
+The published candidate proves Scanner component behavior with synthetic
+external ADAPT/Remedy providers, including real Chromium/MathJax and the actual
+image entrypoints. It does not prove live authentication, live WCAG accuracy,
+the assembled topology, a target host, or production write safety.
 
-**Ready:** the auth mechanism, the MathJax-v2 wait, the iframe DOM capture, the
-`/api/get-header-html/{id}` fast path, batch-by-assignment, JSON output + exit
-codes, containerization.
+LibreTexts' integration/deployment team owns service credentials and rotation,
+deployment timing, question-trigger scheduling, finding storage/presentation,
+downstream capacity and observability, target-host preflight and the complete
+backup/upgrade/rollback plan. Scanner has no database or CXone page snapshots;
+those stores and restoration paths belong to the surrounding integration.
+Refer to the [Server-owned stack guide](https://github.com/johnnyrobot/libretexts-remedy-server-dev/blob/main/deploy/stack/README.md)
+for that maintained handoff. Automatic CXone writes remain subject to the gate
+and owner stated above even when the full integration is delivered.
 
-**Your DevOps team owns** (documented, not faked):
-- the production **service-account / token** issuance and rotation,
-- **where it runs** (a queue worker? a job ADAPT triggers on question save? a
-  nightly sweep?),
-- **where findings go** (store + surface in the ADAPT author UI, or a report),
-- **upstream rate-limiting and observability** for the LLM-backed Remedy calls,
-- if you point `SCAN_MODE=http` at a **different** validator than
-  libretexts-remedy-server (e.g. a raw axe/pa11y/lighthouse service), the
-  **response mapping** in `src/scanner.ts` must be adjusted — it is wired for
-  the libretexts-remedy-server `all_violations`/`overall_passed` schema.
+Unavailable in this supported candidate profile: Windows, arm64, other container
+engines/rootless layouts without new proof, a public staff UI, bundled
+`@libretexts/remedy-core`, alternate validator envelopes, and TestSprite backend
+execution through frontend-only local mode. Scanner does not supply a signing
+service, CXone write allowlist or write-enable switch; configuring Scanner must
+not be presented as enabling those stack features.
 
 ## Requirements
 - macOS or Linux with Node ≥ 20 (uses built-in `fetch`/`FormData`/`node:test`)
