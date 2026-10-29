@@ -40,7 +40,7 @@ CLI arguments; supply that runtime policy before using it.
 
 ```bash
 docker build -t adapt-a11y-scanner .
-docker run --env-file .env adapt-a11y-scanner assignment 5678
+docker run --init --env-file .env adapt-a11y-scanner assignment 5678
 ```
 
 This scanner is one of three repositories that make up the Remedy stack:
@@ -73,6 +73,8 @@ server must run its full `runtime` image — the `runtime-slim` target disables
 | `SCAN_MODE` | `http` (POST DOM to remedy-server) or `in-process` (bundled remedy-core, **dev-only**) |
 | `REMEDY_ENDPOINT` | remedy-server URL when `SCAN_MODE=http` |
 | `REMEDY_API_KEY` | **Required for `http`** — remedy-server API key, sent as `X-API-Key` (must equal the server's `APP_API_KEY`) |
+| `SCANNER_MAX_ACTIVE_JOBS` / `SCANNER_MAX_QUEUED_JOBS` | per-process HTTP admission limits (defaults `1` / `8`, finite positive integers) |
+| `SCANNER_JOB_TIMEOUT_MS` | total admitted-job deadline, including queue wait (default `900000` ms) |
 | `REMEDY_TIMEOUT_MS` | max wait for the synchronous remedy scan (default `240000`) |
 | `CHROMIUM_NO_SANDBOX` | deliberate sandbox opt-out (`1` or `true`); leave unset for sandboxed non-root execution |
 | `MATHJAX_TIMEOUT_MS` / `NAV_TIMEOUT_MS` | render/wait tuning |
@@ -88,6 +90,43 @@ server must run its full `runtime` image — the `runtime-slim` target disables
   in the same process. Not wired for production transfer — you must install/link
   that package yourself (it is not a published dependency).
 
+### HTTP admission, cancellation and shutdown
+
+The synchronous HTTP server requires `SCAN_MODE=http`. Each process admits one
+active job and eight queued jobs by default. Both limits are configurable finite
+positive integers. Questions in an assignment stay sequential. Saturation and
+stopped admission return HTTP 503, `ok: false`, and `Retry-After: 5`, without
+starting a browser or contacting ADAPT/Remedy. `/healthz` returns 503 after
+shutdown begins. A disconnected queued caller is removed immediately.
+
+`SCANNER_JOB_TIMEOUT_MS=900000` is one absolute 15-minute deadline beginning at
+admission, including queue wait, request parsing, browser startup, authentication,
+login, enumeration, navigation, readiness, validation and retry delays. Smaller
+phase timeouts still apply; every phase and retry wait is capped to the remaining
+budget. Deadline failure returns HTTP 504 with `ok: false`; cancellation stops
+later questions and retries. CLI jobs also use this deadline. The dev-only
+in-process CLI validator cannot interrupt arbitrary package code; the HTTP server
+rejects that mode instead of claiming it can cancel it.
+
+Client disconnect, deadline and SIGINT/SIGTERM abort network requests/retry waits
+and close the actual browser. A job retains its active slot until owned browser
+process cleanup finishes. Browser startup is bounded to five seconds; cooperative
+cleanup gets five seconds before the scanner kills and waits for its owned browser
+process group. A private worker is owned before Playwright startup, including a
+launch that never returns a browser handle. Browser control listens only on loopback. There is no guessed PID,
+global process kill, sandbox fallback or background-job protocol.
+
+Shutdown first stops admission, cancels queued/active jobs, sends truthful 503
+failures to connected callers, and drains before closing HTTP sockets. The total
+shutdown bound is 15 seconds; a failure to drain exits unsuccessfully. Configure
+the stack's stop grace **above 15 seconds** and its synchronous HTTP proxy/client
+timeouts above the chosen total job deadline plus cleanup allowance (five
+seconds, or ten if shutdown interrupts browser startup). Multiple replicas each
+have independent admission limits; the downstream Server owner must size its
+capacity accordingly. The local Compose example uses `init: true` and a 20-second stop grace. The
+full-stack owner must carry these settings into the deployed stack; this repo
+does not validate that stack.
+
 ### Chromium sandbox prerequisites
 
 The renderer explicitly enables Chromium's sandbox by default. Run as a
@@ -95,6 +134,10 @@ non-root user on Linux with user/PID namespaces and seccomp available. A sandbox
 startup failure is returned to the caller; there is no automatic unsandboxed
 retry. `CHROMIUM_NO_SANDBOX=1` or `true` deliberately disables this isolation;
 it is not a production deployment remedy for missing host prerequisites.
+
+Run the Linux container with a reaping init (`docker run --init` or Compose
+`init: true`). The scanner refuses Linux PID1 execution because orphaned browser
+processes must be reaped before capacity can be released.
 
 The Dockerfile uses non-root `pwuser` and a browser image matching the locked
 Playwright version. Container execution also needs a namespace-capable seccomp
@@ -162,14 +205,14 @@ codes, containerization.
 - **where it runs** (a queue worker? a job ADAPT triggers on question save? a
   nightly sweep?),
 - **where findings go** (store + surface in the ADAPT author UI, or a report),
-- **retries, rate-limiting, and observability** for the LLM-backed Remedy calls,
+- **upstream rate-limiting and observability** for the LLM-backed Remedy calls,
 - if you point `SCAN_MODE=http` at a **different** validator than
   libretexts-remedy-server (e.g. a raw axe/pa11y/lighthouse service), the
   **response mapping** in `src/scanner.ts` must be adjusted — it is wired for
   the libretexts-remedy-server `all_violations`/`overall_passed` schema.
 
 ## Requirements
-- Node ≥ 20 (uses built-in `fetch`/`FormData`/`node:test`)
+- macOS or Linux with Node ≥ 20 (uses built-in `fetch`/`FormData`/`node:test`)
 - A reachable ADAPT instance + a service-account token
 - A running **remedy-server** with an API key (`SCAN_MODE=http`), or
   `@libretexts/remedy-core` installed (`SCAN_MODE=in-process`, dev-only)
@@ -182,7 +225,10 @@ fail-closed CI gate (`report`). CI runs typecheck + build + tests
 
 `npm run test:browser` additionally exercises real Chromium through the renderer,
 job, CLI and HTTP API with loopback fixtures and fake credentials. It verifies
-source-backed contracts, no-work, operational failures and sandbox behavior.
+source-backed contracts, no-work, operational failures, sandbox behavior and
+actual HTTP admission/cancellation through every phase, queued expiry, deadline
+during retry, shutdown and owned process exit. External providers are synthetic
+loopback fixtures; cancellation tests inspect activity after abort.
 Install the locked browser first
 with `npx --no-install playwright install chromium`. The dedicated Ubuntu 22.04 /
 Node 22 CI job installs Linux system dependencies, requires non-root execution,

@@ -12,6 +12,7 @@
  * 2 usage, 3 fatal.
  */
 import { loadConfig } from './config.js';
+import { JobLifetime, ShutdownError } from './lifecycle.js';
 import { runAdaptScan } from './job.js';
 
 function usage(): never {
@@ -32,15 +33,25 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const report = await runAdaptScan({
-    mode: cmd,
-    id: a,
-    assignmentId: b,
-  });
-  console.log(JSON.stringify(report, null, 2));
-  // M3: set exitCode and let the event loop drain stdout, rather than
-  // process.exit() which truncates a large piped JSON report.
-  process.exitCode = report.exitCode;
+  const lifetime = new JobLifetime(cfg.jobTimeoutMs);
+  const interrupt = () => lifetime.abort(new ShutdownError());
+  process.once('SIGTERM', interrupt);
+  process.once('SIGINT', interrupt);
+  try {
+    const report = await runAdaptScan({
+      mode: cmd,
+      id: a,
+      assignmentId: b,
+    }, lifetime);
+    console.log(JSON.stringify(report, null, 2));
+    // M3: set exitCode and let the event loop drain stdout, rather than
+    // process.exit() which truncates a large piped JSON report.
+    process.exitCode = report.exitCode;
+  } finally {
+    lifetime.dispose();
+    process.removeListener('SIGTERM', interrupt);
+    process.removeListener('SIGINT', interrupt);
+  }
 }
 
 main().catch((e) => {

@@ -10,6 +10,7 @@
  * Both return a ScanResult: the normalized findings plus the server's
  * authoritative pass/fail verdict, so the caller's CI gate can fail closed.
  */
+import { abortableSleep, withRequestSignal, type JobLifetime } from './lifecycle.js';
 import type { Config } from './config.js';
 import type { Finding } from './types.js';
 
@@ -19,8 +20,9 @@ export interface ScanResult {
   overallPassed: boolean;
 }
 
-export async function scanHtml(html: string, cfg: Config): Promise<ScanResult> {
-  return cfg.scanMode === 'in-process' ? scanInProcess(html) : scanHttp(html, cfg);
+export async function scanHtml(html: string, cfg: Config, lifetime?: JobLifetime): Promise<ScanResult> {
+  lifetime?.check();
+  return cfg.scanMode === 'in-process' ? scanInProcess(html) : scanHttp(html, cfg, lifetime);
 }
 
 async function scanInProcess(html: string): Promise<ScanResult> {
@@ -41,25 +43,30 @@ async function scanInProcess(html: string): Promise<ScanResult> {
 }
 
 const MAX_HTTP_ATTEMPTS = 4;
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-async function scanHttp(html: string, cfg: Config): Promise<ScanResult> {
+async function scanHttp(html: string, cfg: Config, lifetime?: JobLifetime): Promise<ScanResult> {
   for (let attempt = 0; ; attempt++) {
+    lifetime?.check();
     // Rebuild the body each attempt — a FormData/Blob stream can only be sent once.
     const form = new FormData();
     form.append('file', new Blob([html], { type: 'text/html' }), 'question.html');
 
     let res: Response;
+    let body: string;
     try {
-      res = await fetch(cfg.remedyEndpoint!, {
-        method: 'POST',
-        headers: buildRemedyHeaders(cfg),
-        body: form,
-        // MF-5: the /v1/validate/html scan is synchronous and heavy; bound it so
-        // a stalled server can't hang the whole assignment batch.
-        signal: AbortSignal.timeout(cfg.remedyTimeoutMs),
-      });
+      ({ res, body } = await withRequestSignal(
+        lifetime?.timeout(cfg.remedyTimeoutMs) ?? cfg.remedyTimeoutMs,
+        lifetime?.signal,
+        async signal => {
+          const res = await fetch(cfg.remedyEndpoint!, {
+            method: 'POST', headers: buildRemedyHeaders(cfg), body: form, signal,
+          });
+          return { res, body: await res.text() };
+        },
+      ));
+      lifetime?.check();
     } catch (e) {
+      lifetime?.check();
       if ((e as Error).name === 'TimeoutError') {
         throw new Error(`remedy-server timed out after ${cfg.remedyTimeoutMs}ms`);
       }
@@ -69,18 +76,17 @@ async function scanHttp(html: string, cfg: Config): Promise<ScanResult> {
     // MF-6: honor the server's rate limit with bounded backoff before giving up.
     if (res.status === 429 && attempt < MAX_HTTP_ATTEMPTS - 1) {
       const wait = backoffMs(attempt, parseRetryAfterMs(res.headers.get('retry-after')));
-      await res.text().catch(() => undefined);
-      await sleep(wait);
+      await abortableSleep(wait, lifetime);
       continue;
     }
 
     if (!res.ok) {
       const rid = res.headers.get('x-request-id');
       throw new Error(
-        `remedy-server ${res.status}${rid ? ` [request_id=${rid}]` : ''}: ${(await res.text()).slice(0, 300)}`,
+        `remedy-server ${res.status}${rid ? ` [request_id=${rid}]` : ''}: ${body.slice(0, 300)}`,
       );
     }
-    return parseRemedyResponse(parseJsonStrict(await res.text(), 'remedy-server'));
+    return parseRemedyResponse(parseJsonStrict(body, 'remedy-server'));
   }
 }
 

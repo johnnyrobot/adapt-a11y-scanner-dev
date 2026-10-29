@@ -4,8 +4,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { readFile, readlink, writeFile } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
+import { readFile, readlink, writeFile, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import childProcess, { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright';
 import { AdaptRenderer } from '../../dist/renderer.js';
 import { buildConfig } from '../../dist/config.js';
@@ -60,7 +62,8 @@ test('real renderer enables the sandbox by default', { timeout: 90000 }, async t
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
-  const launch = chromium.launch.bind(chromium);
+  const spawn = childProcess.spawn;
+  const connect = chromium.connect.bind(chromium);
   try {
     // Each variant launches the actual renderer. Observation delegates to real
     // Chromium and adds no production hook or access to renderer private state.
@@ -68,10 +71,14 @@ test('real renderer enables the sandbox by default', { timeout: 90000 }, async t
       await t.test(`CHROMIUM_NO_SANDBOX=${value ?? '(unset)'}`, async t => {
         const disabled = value === '1' || value === 'true';
         let browser;
-        let options;
-        t.mock.method(chromium, 'launch', async opts => {
-          options = opts;
-          browser = await launch(opts);
+        let worker;
+        t.mock.method(childProcess, 'spawn', function (...args) {
+          const child = spawn.apply(this, args);
+          if (args[1]?.some(arg => String(arg).endsWith('/browser-worker.js'))) worker = child;
+          return child;
+        });
+        t.mock.method(chromium, 'connect', async (...args) => {
+          browser = await connect(...args);
           return browser;
         });
         const cfg = buildConfig({
@@ -89,12 +96,14 @@ test('real renderer enables the sandbox by default', { timeout: 90000 }, async t
           const args = isLinux
             ? (await readFile(`/proc/${browserPid}/cmdline`, 'utf8')).split('\0').filter(Boolean)
             : execFileSync('ps', ['-ww', '-p', String(browserPid), '-o', 'command='], { encoding: 'utf8', timeout: 5000 }).trim().split(/\s+/);
-          const record = { value: value ?? '(unset)', options, args, chromium: browser.version() };
+          assert.ok(worker?.pid, 'actual renderer owns its browser worker before connecting');
+          const pgid = Number(execFileSync('ps', ['-p', String(browserPid), '-o', 'pgid='], { encoding: 'utf8', timeout: 5000 }).trim());
+          assert.equal(pgid, worker.pid, 'actual browser remains in the owned worker group');
+          const record = { value: value ?? '(unset)', workerPid: worker.pid, browserGroup: pgid, args, chromium: browser.version() };
           evidence.cases.push(record);
           // Assert actual process arguments first: this catches Playwright's
-          // implicit --no-sandbox even when application options look harmless.
+          // implicit --no-sandbox even across the private worker boundary.
           assert.equal(args.includes('--no-sandbox'), disabled);
-          assert.equal(options.chromiumSandbox, !disabled);
           if (!disabled) {
             for (const flag of ['--disable-namespace-sandbox', '--disable-seccomp-filter-sandbox', '--single-process']) {
               assert.ok(!args.includes(flag), `unexpected ${flag}`);
@@ -104,6 +113,13 @@ test('real renderer enables the sandbox by default', { timeout: 90000 }, async t
           // browser; renderQuestion closes its own page after capturing it.
           const witness = await browser.contexts()[0].newPage();
           await witness.goto(`${base}/api/get-header-html/1`);
+          const live = await session.send('SystemInfo.getProcessInfo');
+          record.processGroups = [];
+          for (const child of live.processInfo) {
+            const group = Number(execFileSync('ps', ['-p', String(child.id), '-o', 'pgid='], { encoding: 'utf8', timeout: 5000 }).trim());
+            assert.equal(group, worker.pid, `actual ${child.type} remains in the owned worker group`);
+            record.processGroups.push({ pid: child.id, type: child.type, group });
+          }
           if (isLinux && !disabled) {
             const { processInfo } = await session.send('SystemInfo.getProcessInfo');
             const browserProcess = processInfo.find(p => p.type === 'browser');
@@ -146,15 +162,33 @@ test('real renderer enables the sandbox by default', { timeout: 90000 }, async t
 });
 
 test('sandbox launch failure propagates without an unsandboxed retry', async t => {
-  const failure = new Error('synthetic sandbox launch failure');
-  const launch = t.mock.method(chromium, 'launch', async () => { throw failure; });
+  const folder = await mkdtemp(join(tmpdir(), 'scanner-sandbox-failure-'));
+  t.after(() => rm(folder, { recursive: true, force: true }));
+  const preload = join(folder, 'fail-launch.mjs');
+  const attempts = join(folder, 'attempts.jsonl');
+  await writeFile(preload, `
+    import cp from 'node:child_process';
+    import { appendFileSync } from 'node:fs';
+    if (process.argv[1]?.endsWith('/browser-worker.js')) {
+      const spawn = cp.spawn;
+      cp.spawn = function (command, args, options) {
+        appendFileSync(${JSON.stringify(attempts)}, JSON.stringify(args) + '\\n');
+        return spawn.call(this, '/nonexistent/scanner-synthetic-chromium', args, options);
+      };
+    }
+  `);
+  const options = process.env.NODE_OPTIONS;
+  process.env.NODE_OPTIONS = `--import=${preload}`;
+  t.after(() => { if (options === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = options; });
   const cfg = buildConfig({
     ADAPT_BASE_URL: 'http://127.0.0.1', ADAPT_TOKEN: 'synthetic-token',
     SCAN_MODE: 'http', REMEDY_ENDPOINT: 'http://127.0.0.1/unused', REMEDY_API_KEY: 'synthetic-key',
   });
   const renderer = new AdaptRenderer(cfg);
   try {
-    await assert.rejects(renderer.init(), error => error === failure);
-    assert.equal(launch.mock.callCount(), 1);
+    await assert.rejects(renderer.init(), /Chromium launch failed/);
+    const launches = (await readFile(attempts, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(launches.length, 1, 'OS launch failure must not trigger a retry');
+    assert.ok(!launches[0].includes('--no-sandbox'), 'failed launch kept the sandbox enabled');
   } finally { await renderer.close(); }
 });

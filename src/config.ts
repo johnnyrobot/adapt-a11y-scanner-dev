@@ -42,6 +42,9 @@ export interface Config {
    *  on (run the container as the non-root pwuser). Set only when running as
    *  root where the sandbox is impossible. */
   chromiumNoSandbox: boolean;
+  maxActiveJobs: number;
+  maxQueuedJobs: number;
+  jobTimeoutMs: number;
 }
 
 /** A minimal view of the environment, so buildConfig is pure and testable. */
@@ -60,6 +63,14 @@ function positiveMs(env: Env, name: string, def: number): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) {
     throw new Error(`${name} must be a positive number of milliseconds (got ${JSON.stringify(raw)}).`);
+  }
+  return n;
+}
+
+function boundedInteger(env: Env, name: string, def: number): number {
+  const n = Number(env[name] ?? def);
+  if (!Number.isSafeInteger(n) || n <= 0 || n > 2_147_483_647) {
+    throw new Error(`${name} must be a positive integer no greater than 2147483647.`);
   }
   return n;
 }
@@ -96,6 +107,9 @@ export function buildConfig(env: Env): Config {
 
   const cfg: Config = {
     adaptBaseUrl: rawBase,
+    maxActiveJobs: boundedInteger(env, 'SCANNER_MAX_ACTIVE_JOBS', 1),
+    maxQueuedJobs: boundedInteger(env, 'SCANNER_MAX_QUEUED_JOBS', 8),
+    jobTimeoutMs: boundedInteger(env, 'SCANNER_JOB_TIMEOUT_MS', 900000),
     adaptToken: env.ADAPT_TOKEN || undefined,
     adaptEmail: env.ADAPT_EMAIL || undefined,
     adaptPassword: env.ADAPT_PASSWORD || undefined,

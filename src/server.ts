@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { loadConfig } from './config.js';
+import { JobLifetime, ShutdownError } from './lifecycle.js';
+import { ScanAdmission, UnavailableError } from './admission.js';
 import { runAdaptScan, type AdaptScanRequest } from './job.js';
 
 const HOST = process.env.SCANNER_HOST ?? '0.0.0.0';
@@ -18,6 +21,10 @@ if (!API_KEY && !ALLOW_UNAUTHENTICATED) {
   process.exit(1);
 }
 
+const cfg = loadConfig();
+if (cfg.scanMode !== 'http') throw new Error('HTTP scan server requires SCAN_MODE=http for cancellable validation; in-process is CLI-only.');
+const admission = new ScanAdmission(cfg.maxActiveJobs, cfg.maxQueuedJobs);
+
 // Messages runAdaptScan raises for invalid requests rather than infrastructure
 // failure. Kept explicit so a genuine server fault is never masked as a 400.
 const CLIENT_CORRECTABLE = [
@@ -28,7 +35,7 @@ const CLIENT_CORRECTABLE = [
 const server = createServer(async (req, res) => {
   setSecurityHeaders(res);
   if (req.method === 'GET' && req.url === '/healthz') {
-    json(res, 200, { ok: true });
+    json(res, admission.accepting ? 200 : 503, { ok: admission.accepting });
     return;
   }
   if (req.method !== 'POST' || req.url !== '/v1/adapt/scan') {
@@ -40,63 +47,71 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  // Request parsing and the scan itself are separated so their failures get
-  // different statuses: previously a Chromium crash, an unreachable
-  // remedy-server or an ADAPT 5xx all surfaced as 400, so a caller that sent a
-  // perfectly valid body could not tell its own mistake from a retryable
-  // server-side fault.
-  let scan: AdaptScanRequest;
+  const disconnected = new AbortController();
+  const onDisconnect = () => {
+    if (!res.writableEnded) disconnected.abort(new Error('Scan caller disconnected'));
+  };
+  res.once('close', onDisconnect);
+  const lifetime = new JobLifetime(cfg.jobTimeoutMs, disconnected.signal);
   try {
-    scan = parseRequest(await readJson(req));
-  } catch (e) {
-    const message = (e as Error).message;
-    const status = (e as Error & { tooLarge?: boolean }).tooLarge ? 413 : 400;
-    json(res, status, { ok: false, error: message });
-    return;
-  }
-
-  try {
-    const report = await runAdaptScan(scan);
+    const report = await admission.submit(lifetime, async () => {
+      let scan: AdaptScanRequest;
+      try { scan = parseRequest(await readJson(req, lifetime)); }
+      catch (error) { throw Object.assign(error as Error, { clientInput: true }); }
+      lifetime.check();
+      return runAdaptScan(scan, lifetime);
+    });
     json(res, 200, { ok: report.exitCode === 0, ...report });
   } catch (e) {
-    const message = (e as Error).message;
-    // runAdaptScan also raises client-correctable configuration errors (e.g. a
-    // question scan in SPA mode without an assignmentId). Those are the
-    // caller's to fix, so they must not be reported as server faults.
-    if (message === 'ADAPT assignment id must be a positive integer' ||
-        CLIENT_CORRECTABLE.some((fragment) => message.includes(fragment))) {
-      json(res, 400, { ok: false, error: message });
-      return;
+    const error = e as Error & { tooLarge?: boolean; clientInput?: boolean };
+    const message = error.message;
+    // Rejected/expired uploads must not keep draining outside admitted capacity.
+    if (e instanceof UnavailableError || lifetime.signal.aborted || error.tooLarge) res.shouldKeepAlive = false;
+    if (e instanceof UnavailableError || lifetime.signal.reason instanceof ShutdownError) {
+      res.setHeader('retry-after', '5');
+      json(res, 503, { ok: false, error: message });
+    } else if (lifetime.signal.aborted) {
+      json(res, 504, { ok: false, error: message });
+    } else if (error.tooLarge || error.clientInput || message === 'ADAPT assignment id must be a positive integer' ||
+        CLIENT_CORRECTABLE.some(fragment => message.includes(fragment))) {
+      json(res, error.tooLarge ? 413 : 400, { ok: false, error: message });
+    } else {
+      console.error('[adapt-a11y-scanner] scan failed:', message);
+      json(res, 500, { ok: false, error: message });
     }
-    console.error('[adapt-a11y-scanner] scan failed:', message);
-    json(res, 500, { ok: false, error: message });
+  } finally {
+    res.removeListener('close', onDisconnect);
   }
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`[adapt-a11y-scanner] listening on http://${HOST}:${PORT}`);
+  console.log(`[adapt-a11y-scanner] listening on http://${HOST}:${(server.address() as { port: number }).port}`);
 });
 
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const c of req) {
-    const chunk = Buffer.isBuffer(c) ? c : Buffer.from(c);
-    total += chunk.length;
-    if (total > MAX_REQUEST_BYTES) {
-      // Tagged rather than matched on message text: the 413 mapping below used
-      // to sniff for "exceeds", so a reworded message would have silently
-      // downgraded oversized requests to 400.
-      const err = new Error(`Request body exceeds ${MAX_REQUEST_BYTES} bytes.`) as Error & {
-        tooLarge?: boolean;
-      };
-      err.tooLarge = true;
-      throw err;
-    }
-    chunks.push(chunk);
-  }
-  const text = Buffer.concat(chunks).toString('utf8');
-  return text ? JSON.parse(text) : {};
+async function readJson(req: IncomingMessage, lifetime: JobLifetime): Promise<Record<string, unknown>> {
+  lifetime.check();
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const cleanup = () => {
+      req.removeListener('data', data); req.removeListener('end', end);
+      req.removeListener('error', fail); lifetime.signal.removeEventListener('abort', abort);
+    };
+    const fail = (error: unknown) => { cleanup(); req.resume(); reject(error); };
+    const abort = () => fail(lifetime.signal.reason);
+    const data = (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > MAX_REQUEST_BYTES) fail(Object.assign(new Error(`Request body exceeds ${MAX_REQUEST_BYTES} bytes.`), { tooLarge: true }));
+      else chunks.push(chunk);
+    };
+    const end = () => {
+      cleanup();
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); }
+      catch (error) { reject(error); }
+    };
+    req.on('data', data); req.once('end', end); req.once('error', fail);
+    lifetime.signal.addEventListener('abort', abort, { once: true });
+  });
 }
 
 function parseRequest(body: Record<string, unknown>): AdaptScanRequest {
@@ -116,6 +131,7 @@ function parseRequest(body: Record<string, unknown>): AdaptScanRequest {
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
+  if (res.destroyed || res.writableEnded) return;
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(JSON.stringify(body));
 }
@@ -124,3 +140,25 @@ function setSecurityHeaders(res: ServerResponse): void {
   res.setHeader('x-content-type-options', 'nosniff');
   res.setHeader('referrer-policy', 'no-referrer');
 }
+
+let shuttingDown = false;
+function shutdown(): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  admission.stop();
+  // Browser cleanup escalates at five seconds; startup has a five-second bound.
+  // Keep answering readiness/admission during drainage, then stop all sockets.
+  const hardStop = setTimeout(() => {
+    console.error('[adapt-a11y-scanner] shutdown did not drain within 15s');
+    server.closeAllConnections();
+    process.exit(1);
+  }, 15000);
+  const drain = setInterval(() => {
+    if (!admission.idle) return;
+    clearInterval(drain);
+    server.closeAllConnections();
+    server.close(() => { clearTimeout(hardStop); });
+  }, 20);
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

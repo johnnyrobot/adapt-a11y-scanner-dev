@@ -4,6 +4,7 @@
  * (Node fetch resolves real ADAPT domains directly; for *.localhost dev hosts,
  * scan questions by id instead of listing.)
  */
+import { withRequestSignal } from './lifecycle.js';
 import { parseJsonStrict } from './scanner.js';
 
 export interface AdaptQuestionRef {
@@ -16,18 +17,25 @@ export async function listAssignmentQuestions(
   token: string,
   assignmentId: number | string,
   timeoutMs?: number,
+  signal?: AbortSignal,
 ): Promise<AdaptQuestionRef[]> {
+  signal?.throwIfAborted();
   if (!positiveId(assignmentId)) throw new Error('ADAPT assignment id must be a positive integer');
   // Without a signal this request can hang indefinitely on a stalled ADAPT
   // endpoint, stalling the whole assignment batch — and, because the caller
   // runs it inside a try/finally, delaying renderer.close() with it.
   let res: Response;
+  let text: string;
   try {
-    res = await fetch(`${baseUrl}/api/assignments/${assignmentId}/questions/ids`, {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-      signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
-    });
+    ({ res, text } = await withRequestSignal(timeoutMs, signal, async attemptSignal => {
+      const res = await fetch(`${baseUrl}/api/assignments/${assignmentId}/questions/ids`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        signal: attemptSignal,
+      });
+      return { res, text: await res.text() };
+    }));
   } catch (e) {
+    signal?.throwIfAborted();
     const err = e as Error;
     if (err.name === 'TimeoutError' || err.name === 'AbortError') {
       throw new Error(`ADAPT questions/ids timed out after ${timeoutMs}ms`);
@@ -35,9 +43,9 @@ export async function listAssignmentQuestions(
     throw err;
   }
   if (!res.ok) {
-    throw new Error(`ADAPT questions/ids ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    throw new Error(`ADAPT questions/ids ${res.status}: ${text.slice(0, 200)}`);
   }
-  const body = parseJsonStrict(await res.text(), 'ADAPT questions/ids');
+  const body = parseJsonStrict(text, 'ADAPT questions/ids');
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     throw new Error('ADAPT questions/ids contract: expected an object');
   }
