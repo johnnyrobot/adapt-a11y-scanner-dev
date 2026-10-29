@@ -11,7 +11,7 @@ import { JobLifetime } from '../../dist/lifecycle.js';
 import { buildConfig } from '../../dist/config.js';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-const exists = pid => { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; } };
+const exists = pid => { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; if (error.code === 'EPERM') return true; throw error; } };
 
 for (const stage of ['before launch', 'during launch', 'during connect', 'startup cap']) {
   test(`deadline cancels owned browser ${stage}, waits for group exit and prevents downstream work`, { timeout: 15000 }, async t => {
@@ -172,10 +172,19 @@ test('unexpected owner exit ends group ownership before delayed final cleanup', 
   const renderer = new AdaptRenderer(buildConfig({ ADAPT_BASE_URL: base, ADAPT_TOKEN: 'synthetic', SCAN_MODE: 'http', REMEDY_ENDPOINT: base, REMEDY_API_KEY: 'synthetic' }));
   t.after(() => renderer.close());
   await renderer.init(); await renderer.renderQuestion(1);
+  const kill = process.kill.bind(process); const lateSignals = [];
+  let permissionRace = false;
+  t.mock.method(process, 'kill', (pid, signal) => {
+    if (pid === -worker.pid && signal === 0 && !permissionRace) {
+      permissionRace = true;
+      throw Object.assign(new Error('synthetic exiting-group permission race'), { code: 'EPERM' });
+    }
+    return kill(pid, signal);
+  });
   const exited = once(worker, 'exit'); process.kill(-worker.pid, 'SIGKILL'); await exited;
   for (let i = 0; exists(-worker.pid) && i < 300; i++) await pause(10);
   assert.ok(!exists(-worker.pid), 'original owned group has disappeared');
-  const kill = process.kill.bind(process); const lateSignals = [];
+  assert.ok(permissionRace, 'exercise the OS permission race without treating it as disappearance');
   t.mock.method(process, 'kill', (pid, signal) => {
     if (pid === -worker.pid && signal !== 0) lateSignals.push(signal);
     return kill(pid, signal);

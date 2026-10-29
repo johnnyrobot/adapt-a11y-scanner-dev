@@ -57,7 +57,7 @@ async function harness(t, env = {}) {
     owned.delete(api.pid);for(const pid of owned)observedOwned.add(pid);return [...owned];
   };
   const assertExited = async pids => {
-    await until(()=>pids.every(pid=>{try{process.kill(pid,0);return false;}catch(e){if(e.code==='ESRCH')return true;throw e;}}));
+    await until(()=>pids.every(pid=>{try{process.kill(pid,0);return false;}catch(e){if(e.code==='ESRCH')return true;if(e.code==='EPERM')return false;throw e;}}));
   };
   t.after(async()=>{await assertExited([...observedOwned]);});
   return {calls,api,post,disconnect,base,endpoint,descendants,assertExited,browserPids,setHandler: h=>handler=h,defaultHandler:handler};

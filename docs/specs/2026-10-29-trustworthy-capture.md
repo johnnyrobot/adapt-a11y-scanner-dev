@@ -67,6 +67,15 @@ their existing requirements. No new general exemption for math or descendants
 is introduced. Without a declared library, defaults still allow literal-only
 documents in default exclusions.
 
+The final local regression exposed a pre-existing Darwin cleanup race after
+SIGKILL: group probes can return EPERM transiently before ESRCH. The necessary
+verification prerequisite keeps exact process-group ownership on EPERM (which
+proves neither disappearance nor signal delivery) and waits for ESRCH. Test
+observers apply the same existence semantics. The actual renderer regression
+injects this OS error once, waits for true group exit, and still rejects signals
+to the old group after ownership ends. Inaccessible live groups remain owned;
+the shutdown bound is unchanged.
+
 MathJax APIs: [startup sequence](https://docs.mathjax.org/en/v2.7/advanced/startup.html),
 [queued typesetting](https://docs.mathjax.org/en/v2.7/typeset.html). The installed
 unpacked 2.7.3 sources independently confirm replayable StartupHook, `End`,

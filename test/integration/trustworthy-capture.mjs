@@ -162,7 +162,7 @@ test('trustworthy capture through actual Chromium and scan job', { timeout: 9000
       const report = await scan(); assert.equal(report.exitCode, 0, report.results[0]?.error);
     });
     await t.test('real custom ignore/process config preserves nested overrides and skipped subtree closure', async () => {
-      for (const [config, source, output] of [
+      for (const [config, source, expectsSvg] of [
         ["tex2jax:{ignoreClass:'literal-[0-9]+',processClass:'process-math'}", String.raw`<div class="literal-42">\(literal\)<b class="process-math">\(x\)<i class="literal-7">\(nested literal\)</i></b></div>`, true],
         ['', String.raw`<code>\(literal\)<b class="tex2jax_process">\(still literal\)</b></code>`, false],
         ['', String.raw`<code class="tex2jax_process">\(x\)</code>`, true],
@@ -171,7 +171,7 @@ test('trustworthy capture through actual Chromium and scan job', { timeout: 9000
       ]) {
         document = mathDocument(config, config.includes('delayStartupUntil') ? '<script>setTimeout(()=>MathJax.Hub.Configured(),900)</script>' : '', source);
         const report = await scan(); assert.equal(report.exitCode, 0, report.results[0]?.error);
-        assert.equal(captured.includes('<svg'), output, 'actual library honors process/skip semantics');
+        assert.equal(captured.includes('<svg'), expectsSvg, 'actual library honors process/skip semantics');
       }
     });
     await t.test('excluded literals cannot hide unresolved math in processed text', async () => {
