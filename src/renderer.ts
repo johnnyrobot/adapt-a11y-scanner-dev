@@ -9,7 +9,7 @@
  *
  * One browser is reused across many questions for batch efficiency.
  */
-import { chromium, type Browser, type BrowserContext, type Frame, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Frame, type Page, type Response } from 'playwright';
 import type { Config } from './config.js';
 
 export interface RenderedQuestion {
@@ -117,6 +117,11 @@ export class AdaptRenderer {
     }
     const page = await this.ctx.newPage();
     page.setDefaultTimeout(this.cfg.navTimeoutMs);
+    // Record document responses before navigation, including SPA child frames.
+    const documents = new Map<Frame, Response>();
+    page.on('response', response => {
+      if (response.request().isNavigationRequest()) documents.set(response.frame(), response);
+    });
     try {
       let target: Frame | Page;
       let url: string;
@@ -124,35 +129,66 @@ export class AdaptRenderer {
       if (this.cfg.renderMode === 'spa') {
         if (assignmentId == null) throw new Error('SPA render mode needs an assignmentId');
         url = `${this.cfg.adaptBaseUrl}/assignments/${assignmentId}/questions/view/${questionId}`;
-        await page.goto(url, { waitUntil: 'networkidle' });
-        target = await this.waitForContentFrame(page);
+        const response = await page.goto(url, { waitUntil: 'networkidle' });
+        this.assertDocument(response, page.url(), url, 'outer navigation');
+        target = await this.waitForContentFrame(page, questionId);
+        this.assertDocument(documents.get(target), target.url(), `${this.cfg.adaptBaseUrl}/api/get-header-html/${questionId}`, 'content frame');
       } else {
         // iframe mode: the question's content document, served standalone.
         url = `${this.cfg.adaptBaseUrl}/api/get-header-html/${questionId}`;
-        await page.goto(url, { waitUntil: 'networkidle' });
+        const response = await page.goto(url, { waitUntil: 'networkidle' });
+        this.assertDocument(response, page.url(), url, 'question navigation');
         target = page;
       }
 
       await this.waitForMathJax(target);
+      // Re-check identities after readiness: scripts may navigate while typesetting.
+      this.assertDocument(documents.get(page.mainFrame()), page.url(), url, 'outer capture');
+      const frame = target === page ? page.mainFrame() : target as Frame;
+      this.assertDocument(documents.get(frame), target.url(), this.cfg.renderMode === 'spa'
+        ? `${this.cfg.adaptBaseUrl}/api/get-header-html/${questionId}` : url, 'content capture');
+      if (await target.locator('input[type="password"]').count()) {
+        throw new Error('capture authentication document: password input at question route');
+      }
       const html = await target.content();
       return { url, html };
+    } catch (error) {
+      const message = (error as Error).message;
+      if (message.startsWith('capture ') || message.startsWith('readiness ')) throw error;
+      throw new Error('capture navigation failed, timed out or interrupted');
     } finally {
       await page.close();
     }
   }
 
   /** In SPA mode, find the frame that actually holds the question content. */
-  private async waitForContentFrame(page: Page): Promise<Frame> {
+  private async waitForContentFrame(page: Page, questionId: number | string): Promise<Frame> {
     // Deadline-driven rather than a fixed 30 iterations: a hard-coded 30s both
     // overran a tight NAV_TIMEOUT_MS (a 10s CI gate still waited 30s) and cut
     // short a deliberately generous one.
     const pollMs = 1000;
     const deadline = Date.now() + this.cfg.navTimeoutMs;
     for (;;) {
-      const frame = page.frames().find((f) => f.url().includes('get-header-html'));
+      const expected = new URL(`${this.cfg.adaptBaseUrl}/api/get-header-html/${questionId}`);
+      const candidates = page.frames().filter(f => f !== page.mainFrame());
+      let frame = candidates.find(f => f.url() === expected.href);
+      if (!frame) {
+        for (const candidate of candidates) {
+          const element = await candidate.frameElement();
+          const source = await element.getAttribute('src');
+          await element.dispose();
+          if (source && new URL(source, page.url()).href === expected.href && candidate.url() !== 'about:blank') {
+            frame = candidate;
+            break;
+          }
+        }
+      }
       if (frame) {
         const ready = await frame.evaluate(() => document.readyState === 'complete').catch(() => false);
-        if (ready) return frame;
+        if (ready) {
+          await frame.waitForLoadState('networkidle', { timeout: Math.max(1, deadline - Date.now()) });
+          return frame;
+        }
       }
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
@@ -161,29 +197,87 @@ export class AdaptRenderer {
       await page.waitForTimeout(Math.min(pollMs, remaining));
     }
     throw new Error(
-      `question content frame (get-header-html) did not appear within ${this.cfg.navTimeoutMs}ms`,
+      `capture content frame: expected question route did not appear within ${this.cfg.navTimeoutMs}ms`,
     );
   }
 
-  /** Wait for MathJax v2 to finish typesetting (or time out and capture anyway). */
+  /** Only the exact source-backed question routes are accepted. Diagnostics omit
+   * URL credentials, query, fragment and unknown paths (which may contain secrets). */
+  private assertDocument(response: Response | null | undefined, actual: string, expected: string, stage: string): void {
+    const location = new URL(actual);
+    const safePath = /^\/(api\/get-header-html\/[0-9]+|assignments\/[0-9]+\/questions\/view\/[0-9]+|login)\/?$/.test(location.pathname)
+      ? location.pathname : '/[unexpected-path]';
+    const diagnostic = `${stage} status=${response?.status() ?? 'missing'} location=${location.origin}${safePath}`;
+    if (actual !== new URL(expected).href || !response?.ok()) {
+      throw new Error(`capture rejected: ${diagnostic}`);
+    }
+    if (!/^(text\/html|application\/xhtml\+xml)(?:;|$)/i.test(response.headers()['content-type'] ?? '')) {
+      throw new Error(`capture non-HTML document: ${diagnostic}`);
+    }
+  }
+
+  /** The v2 startup signal replays history. Queue a fresh Typeset after End,
+   * then inspect actual output; an idle queue alone proves nothing. */
   private async waitForMathJax(target: Frame | Page): Promise<void> {
-    await target
-      .waitForFunction(
-        () => {
-          const mj = (window as unknown as { MathJax?: { Hub?: { queue?: { running?: number; pending?: number } } } }).MathJax;
-          const typeset = !!document.querySelector(
-            '.MathJax, .MathJax_Display, .mjx-chtml, [id^="MathJax-Element"]',
-          );
-          if (!mj?.Hub?.queue) return typeset || document.readyState === 'complete';
-          const q = mj.Hub.queue;
-          return !q.running && !q.pending && (typeset || true);
-        },
-        undefined,
-        { timeout: this.cfg.mathjaxTimeoutMs },
-      )
-      .catch(() => {
-        /* timed out — capture whatever rendered */
-      });
+    const deadline = Date.now() + this.cfg.mathjaxTimeoutMs;
+    try {
+      const probe = await target.waitForFunction(() => {
+        const mj = (window as unknown as { MathJax?: { version?: string; Hub?: unknown } }).MathJax;
+        const declared = !!mj || !!document.querySelector('script[src*="MathJax" i], script[type="text/x-mathjax-config"]');
+        const math = !!document.querySelector('math, script[type^="math/"], .MathJax, .MathJax_SVG');
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let node: Node | null;
+        let tex = false;
+        while ((node = walker.nextNode())) {
+          if (node.parentElement?.closest('script, style, pre, code, textarea')) continue;
+          if (/\\\(|\\\[|\$\$/.test(node.textContent ?? '')) { tex = true; break; }
+        }
+        if (!declared && !math && !tex) return { required: false, known: false };
+        if (mj?.version && !mj.version.startsWith('2.')) return { required: true, known: math || tex, unsupported: true };
+        return mj?.Hub ? { required: true, known: math || tex, unsupported: false } : false;
+      }, undefined, { timeout: this.cfg.mathjaxTimeoutMs });
+      const state = await probe.jsonValue();
+      await probe.dispose();
+      if (!state || !state.required) return;
+      if (state.unsupported) throw new Error('unsupported MathJax major');
+      await target.evaluate(async ({ timeout, known }) => {
+        interface Jax { inputID: string; }
+        interface Hub {
+          Register: { StartupHook: (name: string, fn: () => void) => void; MessageHook: (name: string, fn: () => void) => void };
+          Queue: (...callbacks: unknown[]) => void;
+          getAllJax: () => Jax[];
+        }
+        const mj = (window as unknown as { MathJax: { version: string; Hub: Hub } }).MathJax;
+        if (!mj.version?.startsWith('2.')) throw new Error('unsupported MathJax major');
+        const hub = mj.Hub;
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('MathJax completion timeout')), timeout);
+          const fail = () => { clearTimeout(timer); reject(new Error('MathJax typesetting failed')); };
+          hub.Register.MessageHook('file load error', fail);
+          hub.Register.MessageHook('Math Processing Error', fail);
+          hub.Register.StartupHook('End', () => {
+            hub.Queue(['Typeset', hub, document.body], () => {
+              clearTimeout(timer);
+              const jax = hub.getAllJax();
+              const scripts = document.querySelectorAll('script[type^="math/"]');
+              const incomplete = jax.some(j => {
+                const output = document.getElementById(`${j.inputID}-Frame`);
+                return !output || !output.querySelector('svg') && !output.matches('.MathJax, .MathJax_Display');
+              });
+              // Native MathML and source scripts must be consumed by a real jax.
+              const raw = document.querySelector('body math:not(.MJX_Assistive_MathML math)');
+              const errors = document.querySelector('.MathJax_Error, .merror, .mjx-merror, .MJXp-merror, .noError');
+              if (incomplete || raw || errors || scripts.length !== jax.length || known && jax.length === 0) { fail(); return; }
+              resolve();
+            });
+          });
+        });
+      }, { timeout: Math.max(1, deadline - Date.now()), known: state.known });
+    } catch (error) {
+      // Browser/library errors can quote private question source or request URLs.
+      const unsupported = (error as Error).message.includes('unsupported MathJax major');
+      throw new Error(`readiness failed: ${unsupported ? 'unsupported MathJax major' : 'MathJax startup/typesetting incomplete, failed or interrupted'}`);
+    }
   }
 
   async close(): Promise<void> {

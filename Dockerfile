@@ -17,7 +17,7 @@ RUN npm run build
 
 # Ensure the Chromium build matching the installed Playwright is present
 # (robust even if the base image tag drifts from the locked version).
-RUN npx playwright install chromium
+RUN npx playwright install chromium && npm prune --omit=dev
 
 # Drop root: run as the non-root user the Playwright image provides, with the
 # Chromium sandbox ENABLED (do not set CHROMIUM_NO_SANDBOX).
