@@ -45,6 +45,28 @@ failures even when startup clears signal history. File-load/processing errors, b
 libraries, timeouts and interrupted documents fail before validation. Declared
 libraries on no-math questions must still finish startup and the queued Typeset.
 
+### Intentional literal TeX (LT-143)
+
+Raw-delimiter detection follows pinned tex2jax 2.7.3 `createPatterns` and
+`scanElement` traversal. The effective configured extension (or Hub config
+before preprocessing) supplies skipTags, ignoreClass and processClass. Defaults
+include script, noscript, style, textarea, pre, code, annotation and annotation-xml.
+Ignore/process values are regular expressions bounded by literal spaces as in
+the source; preRemoveClass is also ignored. MathJax-prefixed output is closed.
+Ignored subtrees are still traversed: processClass resets inherited ignore,
+and a nested ignore can reset it again. A skipped tag closes its subtree unless
+that skipped element itself has processClass; a deeper processClass cannot
+reopen a closed skipped subtree. Custom skipTags replaces the defaults.
+
+The initial delimiter probe decides whether to await a library. It does not
+require a jax merely because later configuration deliberately excludes those
+delimiters. The final probe after Typeset uses the effective configuration and
+still rejects unresolved delimiters in processed text. Structural math markers,
+native MathML, source scripts, output/completion checks and library failures keep
+their existing requirements. No new general exemption for math or descendants
+is introduced. Without a declared library, defaults still allow literal-only
+documents in default exclusions.
+
 MathJax APIs: [startup sequence](https://docs.mathjax.org/en/v2.7/advanced/startup.html),
 [queued typesetting](https://docs.mathjax.org/en/v2.7/typeset.html). The installed
 unpacked 2.7.3 sources independently confirm replayable StartupHook, `End`,
@@ -75,6 +97,7 @@ SHA-256, asserted by the test before serving:
 | MathJax.js | f3bbf1b342e93173df117394fed9b914afc1506eee6c04b92edb528d09893048 |
 | config/TeX-AMS_HTML.js | 02a6199a83a04869684c04bad7cdbb250aa620eb263991ce8031d585dfc8dde3 |
 | LICENSE | cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30 |
+| extensions/tex2jax.js | d8cf75b0b0a0f2c2891d5cea8ff2e0e326b263e64b179178eab6f2783cc505b9 |
 
 This intentionally old test fixture has npm advisories GHSA-3c48-6pcv-88rm
 (moderate XSS, fixed after 2.7.3) and GHSA-v638-q856-grg8 (high ReDoS). Test

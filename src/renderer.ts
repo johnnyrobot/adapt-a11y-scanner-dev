@@ -256,13 +256,30 @@ export class AdaptRenderer {
 
   private async hasRawTex(target: Frame | Page): Promise<boolean> {
     return target.evaluate(() => {
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-      let node: Node | null;
-      while ((node = walker.nextNode())) {
-        if (node.parentElement?.closest('script, style, pre, code, textarea, .MathJax, .MathJax_Display, .MathJax_SVG, .MathJax_CHTML, .MJX_Assistive_MathML')) continue;
-        if (/\\\(|\\\[|\$\$/.test(node.textContent ?? '')) return true;
-      }
-      return false;
+      interface TexConfig { skipTags?: string[]; ignoreClass?: string; processClass?: string; }
+      const mj = (window as unknown as { MathJax?: {
+        Hub?: { config?: { tex2jax?: TexConfig; preRemoveClass?: string } };
+        Extension?: { tex2jax?: { configured?: boolean; config: TexConfig } };
+      } }).MathJax;
+      const extension = mj?.Extension?.tex2jax;
+      const config = extension?.configured ? extension.config : mj?.Hub?.config?.tex2jax;
+      // MathJax 2.7.3 tex2jax.createPatterns/scanElement: skipped subtrees are
+      // closed unless the skipped element itself has processClass. Ignored
+      // subtrees are traversed so nested processClass can reset inheritance.
+      const skip = new RegExp(`^(${(config?.skipTags ?? ['script', 'noscript', 'style', 'textarea', 'pre', 'code', 'annotation', 'annotation-xml']).join('|')})$`, 'i');
+      const ignored = [mj?.Hub?.config?.preRemoveClass ?? 'MathJax_Preview', config?.ignoreClass ?? 'tex2jax_ignore'].filter(Boolean);
+      const ignore = ignored.length ? new RegExp(`(^| )(${ignored.join('|')})( |$)`) : /^$/;
+      const process = new RegExp(`(^| )(${config?.processClass ?? 'tex2jax_process'})( |$)`);
+      const scan = (node: Node, inheritedIgnore: boolean): boolean => {
+        if (node.nodeType === Node.TEXT_NODE) return !inheritedIgnore && /\\\(|\\\[|\$\$/.test(node.textContent ?? '');
+        if (!(node instanceof Element)) return false;
+        const className = String(node.className ?? '');
+        const explicitProcess = process.test(className);
+        if (/(^| )MathJax/.test(className) || skip.test(node.tagName) && !explicitProcess) return false;
+        const ignoreChild = (inheritedIgnore || ignore.test(className)) && !explicitProcess;
+        return Array.from(node.childNodes).some(child => scan(child, ignoreChild));
+      };
+      return scan(document.body, false);
     });
   }
 
@@ -277,8 +294,10 @@ export class AdaptRenderer {
         const declared = !!mj || !!document.querySelector('script[src*="MathJax" i], script[type="text/x-mathjax-config"]');
         const math = !!document.querySelector('math, script[type^="math/"], .MathJax, .MathJax_SVG, .MathJax_Display, .MathJax_CHTML, .mjx-chtml, mjx-chtml, mjx-container');
         if (!declared && !math && !tex) return { required: false, mathDetected: false };
-        if (mj?.version && !mj.version.startsWith('2.')) return { required: true, mathDetected: math || tex, unsupported: true };
-        return mj?.Hub ? { required: true, mathDetected: math || tex, unsupported: false } : false;
+        if (mj?.version && !mj.version.startsWith('2.')) return { required: true, mathDetected: math, unsupported: true };
+        // Raw delimiters may be intentional literals under configuration that
+        // has not run yet. The post-Typeset scan uses the effective config.
+        return mj?.Hub ? { required: true, mathDetected: math, unsupported: false } : false;
       }, rawTex, { timeout: this.timeout(Math.max(1, deadline - Date.now())) });
       const state = await probe.jsonValue();
       await probe.dispose();
