@@ -11,11 +11,9 @@ export interface AdaptScanRequest {
   assignmentId?: number | string;
 }
 
-export interface AdaptScanReport {
+export interface AdaptScanReport extends RunSummary {
   scanMode: ReturnType<typeof loadConfig>['scanMode'];
   renderMode: ReturnType<typeof loadConfig>['renderMode'];
-  totals: RunSummary['totals'];
-  exitCode: number;
   results: QuestionScanResult[];
 }
 
@@ -78,6 +76,5 @@ export async function runAdaptScan(req: AdaptScanRequest): Promise<AdaptScanRepo
     await renderer.close();
   }
 
-  const { totals, exitCode } = summarize(results);
-  return { scanMode: cfg.scanMode, renderMode: cfg.renderMode, totals, exitCode, results };
+  return { scanMode: cfg.scanMode, renderMode: cfg.renderMode, ...summarize(results), results };
 }

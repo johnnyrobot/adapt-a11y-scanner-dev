@@ -119,12 +119,58 @@ export function buildRemedyHeaders(cfg: Pick<Config, 'remedyApiKey'>): Record<st
  * Parse the remedy-server /v1/validate/html response. The server emits findings
  * under `all_violations` (a merged, deduped, severity-sorted list) and its
  * verdict under `overall_passed`. There is no `findings`/`results`/`issues` key.
- * A missing/unrecognized shape is treated as fail-closed (overallPassed=false).
+ * Source-pinned full envelope; malformed data throws before normalization.
+ * See docs/specs/2026-10-29-scan-contracts.md for provenance and limits.
  */
 export function parseRemedyResponse(body: unknown): ScanResult {
-  const b = (body ?? {}) as Record<string, unknown>;
-  const raw = Array.isArray(b.all_violations) ? b.all_violations : [];
-  return { findings: normalize(raw), overallPassed: b.overall_passed === true };
+  const b = contractRecord(body, 'response');
+  contract(typeof b.overall_passed === 'boolean', 'overall_passed must be boolean');
+  contract(typeof b.summary === 'string', 'summary must be a string');
+  const raw = validateViolations(b.all_violations, 'all_violations');
+  const severe = (v: Record<string, unknown>) => v.impact === 'critical' || v.impact === 'serious';
+  if (b.overall_passed) contract(!raw.some(severe), 'pass contradicts severe findings');
+  for (const name of ['axe', 'pa11y', 'lighthouse', 'wave']) {
+    const tool = contractRecord(b[name], name);
+    contract(typeof tool.passed === 'boolean', `${name}.passed must be boolean`);
+    contract(tool.score === null || (typeof tool.score === 'number' && Number.isFinite(tool.score)), `${name}.score must be finite or null`);
+    const findings = validateViolations(tool.violations, `${name}.violations`);
+    if (b.overall_passed) {
+      contract(!findings.some(severe), `pass contradicts ${name} severe findings`);
+      contract(tool.passed || findings.length > 0, `pass contradicts failed empty ${name} checker`);
+      contract(raw.length > 0 || findings.length === 0, 'clean merged result omits tool findings');
+    }
+  }
+  return { findings: normalize(raw), overallPassed: b.overall_passed };
+}
+
+function contract(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(`remedy-server contract: ${message}`);
+}
+
+function contractRecord(value: unknown, field: string): Record<string, unknown> {
+  contract(value !== null && typeof value === 'object' && !Array.isArray(value), `${field} must be an object`);
+  return value as Record<string, unknown>;
+}
+
+function validateViolations(value: unknown, field: string): Record<string, unknown>[] {
+  contract(Array.isArray(value), `${field} must be an array`);
+  return value.map((item, index) => {
+    const path = `${field}[${index}]`;
+    const v = contractRecord(item, path);
+    for (const key of ['tool', 'id', 'description']) {
+      contract(typeof v[key] === 'string', `${path}.${key} must be a string`);
+    }
+    contract(v.impact === null || ['critical', 'serious', 'moderate', 'minor'].includes(v.impact as string), `${path}.impact is invalid`);
+    for (const key of ['wcag', 'selector', 'context', 'help', 'help_url']) {
+      if (key in v) contract(typeof v[key] === 'string', `${path}.${key} must be a string`);
+    }
+    if ('html_snippets' in v) {
+      contract(Array.isArray(v.html_snippets) && v.html_snippets.every(s => typeof s === 'string'), `${path}.html_snippets must be strings`);
+    }
+    if ('nodes_count' in v) contract(Number.isSafeInteger(v.nodes_count) && (v.nodes_count as number) >= 0, `${path}.nodes_count must be a nonnegative integer`);
+    if ('score' in v) contract(typeof v.score === 'number' && Number.isFinite(v.score), `${path}.score must be finite`);
+    return v;
+  });
 }
 
 /** Map an axe/pa11y/lighthouse `impact` — or an already-canonical severity — to

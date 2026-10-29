@@ -1,0 +1,39 @@
+{
+  "contract_id": "adapt-assignment-question-ids-v1-source",
+  "source_commit": "ee9478b0b418d222c17a15a004a36cec43858dfd",
+  "source_files_sha256": {
+    "routes/api.php": "4f5b1222d6b80d16a59d4fd03181d136564513b19137af8f40783a2c43f02fd3",
+    "app/Http/Controllers/AssignmentSyncQuestionController.php": "875f9ba32f8975d0a9cfb990c8eed497c647e7a57cf802d42d4061f35c8bc9db",
+    "app/Http/Controllers/AssignmentController.php": "79d5c92f12e30e180ccfe54b34a356764725cd6b0ec73498c11cafec1b1b8d46"
+  },
+  "evidence_kind": "Synthetic envelopes derived from pinned route/controller source; no live ADAPT request",
+  "path": "/api/assignments/{id}/questions/ids",
+  "examples": [
+    {
+      "name": "questions",
+      "body": {
+        "type": "success",
+        "question_ids_array": [
+          7,
+          "9007199254740993"
+        ],
+        "question_ids": "[7,\"9007199254740993\"]"
+      }
+    },
+    {
+      "name": "empty",
+      "body": {
+        "type": "success",
+        "question_ids_array": [],
+        "question_ids": "[]"
+      }
+    },
+    {
+      "name": "error",
+      "body": {
+        "type": "error",
+        "message": "Synthetic access denial"
+      }
+    }
+  ]
+}

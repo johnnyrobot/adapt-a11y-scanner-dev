@@ -17,33 +17,44 @@ export async function listAssignmentQuestions(
   assignmentId: number | string,
   timeoutMs?: number,
 ): Promise<AdaptQuestionRef[]> {
+  if (!positiveId(assignmentId)) throw new Error('ADAPT assignment id must be a positive integer');
   // Without a signal this request can hang indefinitely on a stalled ADAPT
   // endpoint, stalling the whole assignment batch — and, because the caller
   // runs it inside a try/finally, delaying renderer.close() with it.
   let res: Response;
   try {
-    res = await fetch(`${baseUrl}/api/assignments/${assignmentId}/get-questions-info`, {
+    res = await fetch(`${baseUrl}/api/assignments/${assignmentId}/questions/ids`, {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
       signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
     });
   } catch (e) {
     const err = e as Error;
     if (err.name === 'TimeoutError' || err.name === 'AbortError') {
-      throw new Error(`ADAPT get-questions-info timed out after ${timeoutMs}ms`);
+      throw new Error(`ADAPT questions/ids timed out after ${timeoutMs}ms`);
     }
     throw err;
   }
   if (!res.ok) {
-    throw new Error(`ADAPT get-questions-info ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    throw new Error(`ADAPT questions/ids ${res.status}: ${(await res.text()).slice(0, 200)}`);
   }
-  const body = parseJsonStrict(await res.text(), 'ADAPT get-questions-info') as Record<string, unknown>;
-  // ADAPT nests the list under a few possible keys depending on version.
-  const arr = (body.questions ?? body.question_info ?? body.data ?? []) as unknown[];
-  const refs: (AdaptQuestionRef | null)[] = (Array.isArray(arr) ? arr : []).map((q) => {
-    const o = q as Record<string, unknown>;
-    const id = o.id ?? o.question_id ?? o.questionId;
-    if (id == null) return null;
-    return { id: id as number | string, title: o.title ? String(o.title) : undefined };
+  const body = parseJsonStrict(await res.text(), 'ADAPT questions/ids');
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    throw new Error('ADAPT questions/ids contract: expected an object');
+  }
+  const b = body as Record<string, unknown>;
+  if (b.type !== 'success' || !Array.isArray(b.question_ids_array)) {
+    throw new Error('ADAPT questions/ids contract: expected type=success and question_ids_array');
+  }
+  // Source snapshot ee9478b: question_ids is a JSON-encoded legacy duplicate.
+  // Never infer an empty list from missing data or silently discard bad IDs.
+  return b.question_ids_array.map(id => {
+    if (!positiveId(id)) throw new Error('ADAPT questions/ids contract: invalid positive integer question id');
+    return { id };
   });
-  return refs.filter((x): x is AdaptQuestionRef => x !== null);
+}
+
+function positiveId(id: unknown): id is number | string {
+  return typeof id === 'number'
+    ? Number.isSafeInteger(id) && id > 0
+    : typeof id === 'string' && /^[0-9]+$/.test(id) && /[1-9]/.test(id);
 }

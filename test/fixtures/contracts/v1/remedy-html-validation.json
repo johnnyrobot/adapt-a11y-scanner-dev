@@ -1,0 +1,267 @@
+{
+  "contract_id": "remedy-html-validation-v1-baseline",
+  "contract_id_is_payload_field": false,
+  "source_commit": "78710dc0af53d3e63a662fb392b5190f2e2d0dab",
+  "source_files_sha256": {
+    "backend/app/html_utils.py": "c881edda18be6fdd23e2fee1471a0deadc3d8245f7a366294d456c08bb7bc03d",
+    "backend/app/validate_routes.py": "2a8824c9402e5652ce4a7752fe23e922fd246456353c61c3ec059aa9f561e15b",
+    "src/project_remedy/validator.py": "b5b6cbab09ad0ac086797251fba618f441effc5b2b56cc9ea9a2cc22cc853c33",
+    "src/project_remedy/models.py": "40701d89164d559ab07757ac265b61188e1f1498cd2f2ead62effddfdac317e2"
+  },
+  "evidence_kind": "Real AccessibilityValidator.validate orchestration and serializer, synthetic external-tool adapters; no browser/CLI/HTTP/live services exercised",
+  "examples": [
+    {
+      "name": "pass",
+      "http_status": 200,
+      "body": {
+        "axe": {
+          "score": null,
+          "passed": true,
+          "violations": []
+        },
+        "pa11y": {
+          "score": null,
+          "passed": true,
+          "violations": []
+        },
+        "lighthouse": {
+          "score": 100,
+          "passed": true,
+          "violations": []
+        },
+        "wave": {
+          "score": null,
+          "passed": true,
+          "violations": []
+        },
+        "overall_passed": true,
+        "summary": "axe-core: 0 violation(s) | pa11y: 0 violation(s) | Lighthouse score: 100/100 (0 audit failure(s)) | WAVE: 0 violation(s) | Total unique violations: 0 | Critical/serious: 0 | Result: PASS",
+        "all_violations": []
+      }
+    },
+    {
+      "name": "warning",
+      "http_status": 200,
+      "body": {
+        "axe": {
+          "score": null,
+          "passed": true,
+          "violations": [
+            {
+              "tool": "axe",
+              "id": "synthetic-rule",
+              "impact": "moderate",
+              "description": "Synthetic contract example",
+              "help": "Synthetic explanation",
+              "help_url": "https://example.invalid/rule",
+              "wcag": "wcag111",
+              "nodes_count": 1,
+              "html_snippets": [
+                "<img src=\"synthetic.png\">"
+              ]
+            }
+          ]
+        },
+        "pa11y": {
+          "score": null,
+          "passed": true,
+          "violations": []
+        },
+        "lighthouse": {
+          "score": 100,
+          "passed": true,
+          "violations": []
+        },
+        "wave": {
+          "score": null,
+          "passed": true,
+          "violations": []
+        },
+        "overall_passed": true,
+        "summary": "axe-core: 1 violation(s) | pa11y: 0 violation(s) | Lighthouse score: 100/100 (0 audit failure(s)) | WAVE: 0 violation(s) | Total unique violations: 1 | Critical/serious: 0 | Result: PASS",
+        "all_violations": [
+          {
+            "tool": "axe",
+            "id": "synthetic-rule",
+            "impact": "moderate",
+            "description": "Synthetic contract example",
+            "help": "Synthetic explanation",
+            "help_url": "https://example.invalid/rule",
+            "wcag": "wcag111",
+            "nodes_count": 1,
+            "html_snippets": [
+              "<img src=\"synthetic.png\">"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "accessibility_failure",
+      "http_status": 200,
+      "body": {
+        "axe": {
+          "score": null,
+          "passed": false,
+          "violations": [
+            {
+              "tool": "axe",
+              "id": "synthetic-rule",
+              "impact": "serious",
+              "description": "Synthetic contract example",
+              "help": "Synthetic explanation",
+              "help_url": "https://example.invalid/rule",
+              "wcag": "wcag111",
+              "nodes_count": 1,
+              "html_snippets": [
+                "<img src=\"synthetic.png\">"
+              ]
+            }
+          ]
+        },
+        "pa11y": {
+          "score": null,
+          "passed": true,
+          "violations": []
+        },
+        "lighthouse": {
+          "score": 100,
+          "passed": true,
+          "violations": []
+        },
+        "wave": {
+          "score": null,
+          "passed": true,
+          "violations": []
+        },
+        "overall_passed": false,
+        "summary": "axe-core: 1 violation(s) | pa11y: 0 violation(s) | Lighthouse score: 100/100 (0 audit failure(s)) | WAVE: 0 violation(s) | Total unique violations: 1 | Critical/serious: 1 | Result: FAIL",
+        "all_violations": [
+          {
+            "tool": "axe",
+            "id": "synthetic-rule",
+            "impact": "serious",
+            "description": "Synthetic contract example",
+            "help": "Synthetic explanation",
+            "help_url": "https://example.invalid/rule",
+            "wcag": "wcag111",
+            "nodes_count": 1,
+            "html_snippets": [
+              "<img src=\"synthetic.png\">"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "partial_checker_failure",
+      "http_status": 200,
+      "body": {
+        "axe": {
+          "score": null,
+          "passed": true,
+          "violations": []
+        },
+        "pa11y": {
+          "score": null,
+          "passed": false,
+          "violations": []
+        },
+        "lighthouse": {
+          "score": 100,
+          "passed": true,
+          "violations": []
+        },
+        "wave": {
+          "score": null,
+          "passed": true,
+          "violations": []
+        },
+        "overall_passed": false,
+        "summary": "Checker did not run: pa11y | axe-core: 0 violation(s) | pa11y: 0 violation(s) | Lighthouse score: 100/100 (0 audit failure(s)) | WAVE: 0 violation(s) | Total unique violations: 0 | Critical/serious: 0 | Result: FAIL",
+        "all_violations": []
+      }
+    },
+    {
+      "name": "null_impact",
+      "http_status": 200,
+      "body": {
+        "axe": {
+          "score": null,
+          "passed": true,
+          "violations": [
+            {
+              "tool": "axe",
+              "id": "synthetic-rule",
+              "impact": null,
+              "description": "Synthetic contract example",
+              "help": "Synthetic explanation",
+              "help_url": "https://example.invalid/rule",
+              "wcag": "wcag111",
+              "nodes_count": 1,
+              "html_snippets": [
+                "<img src=\"synthetic.png\">"
+              ]
+            }
+          ]
+        },
+        "pa11y": {
+          "score": null,
+          "passed": true,
+          "violations": []
+        },
+        "lighthouse": {
+          "score": 100,
+          "passed": true,
+          "violations": []
+        },
+        "wave": {
+          "score": null,
+          "passed": true,
+          "violations": []
+        },
+        "overall_passed": true,
+        "summary": "axe-core: 1 violation(s) | pa11y: 0 violation(s) | Lighthouse score: 100/100 (0 audit failure(s)) | WAVE: 0 violation(s) | Total unique violations: 1 | Critical/serious: 0 | Result: PASS",
+        "all_violations": [
+          {
+            "tool": "axe",
+            "id": "synthetic-rule",
+            "impact": null,
+            "description": "Synthetic contract example",
+            "help": "Synthetic explanation",
+            "help_url": "https://example.invalid/rule",
+            "wcag": "wcag111",
+            "nodes_count": 1,
+            "html_snippets": [
+              "<img src=\"synthetic.png\">"
+            ]
+          }
+        ]
+      },
+      "note": "Nullable axe impact is emitted unchanged by the current serializer; this synthetic variant is a boundary-shape example, not a real axe execution."
+    }
+  ],
+  "http_error_examples": [
+    {
+      "http_status": 503,
+      "body": {
+        "detail": "External validator tool missing: synthetic dependency. Ensure pa11y, lighthouse, and playwright chromium are installed."
+      },
+      "note": "Illustrative dependency error from current route; exact dependency message varies."
+    },
+    {
+      "http_status": 401,
+      "body": {
+        "detail": "Unauthorized"
+      },
+      "note": "Illustrative auth error; enforce non-2xx failure independently of error-body shape."
+    }
+  ],
+  "compatibility_notes": [
+    "Endpoint payload has NO schema_version/contract_id today. Pin this fixture manifest to source commit; do not require invented wire fields.",
+    "Partial checker failure is HTTP200 overall_passed=false, failed checker passed=false/violations=[], with human-readable summary. There is no typed completeness/error field; do not parse English summary for control flow.",
+    "WAVE is a stable empty passed=true placeholder in this local-file endpoint, not evidence that WAVE ran.",
+    "Required success-envelope keys are axe,pa11y,lighthouse,wave,overall_passed,summary,all_violations. Per-tool score nullable numeric, passed boolean, violations array.",
+    "Missing/non-array all_violations, nonboolean verdict, malformed findings or inconsistent clean verdict cannot become a pass."
+  ]
+}

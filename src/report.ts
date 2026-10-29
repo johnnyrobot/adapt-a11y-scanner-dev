@@ -19,6 +19,8 @@ export interface RunSummary {
     notPassed: number;
   };
   exitCode: number;
+  outcome?: 'no_work';
+  message?: string;
 }
 
 export function summarize(results: QuestionScanResult[]): RunSummary {
@@ -36,6 +38,9 @@ export function summarize(results: QuestionScanResult[]): RunSummary {
     { errors: 0, warnings: 0, scanned: 0, failed: 0, notPassed: 0 },
   );
 
+  if (results.length === 0) {
+    return { totals, exitCode: 1, outcome: 'no_work', message: 'No questions were available to scan.' };
+  }
   const clean = totals.failed === 0 && totals.notPassed === 0 && totals.errors === 0;
   return { totals, exitCode: clean ? 0 : 1 };
 }

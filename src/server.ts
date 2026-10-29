@@ -63,7 +63,8 @@ const server = createServer(async (req, res) => {
     // runAdaptScan also raises client-correctable configuration errors (e.g. a
     // question scan in SPA mode without an assignmentId). Those are the
     // caller's to fix, so they must not be reported as server faults.
-    if (CLIENT_CORRECTABLE.some((fragment) => message.includes(fragment))) {
+    if (message === 'ADAPT assignment id must be a positive integer' ||
+        CLIENT_CORRECTABLE.some((fragment) => message.includes(fragment))) {
       json(res, 400, { ok: false, error: message });
       return;
     }
