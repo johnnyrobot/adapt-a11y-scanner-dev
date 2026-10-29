@@ -247,3 +247,8 @@ not skipped. This integration suite currently supports macOS and native Linux;
 on macOS it checks launch arguments/capture, not Linux isolation. Linux `/proc`
 namespace links may require read-only, passwordless `sudo readlink` inspection;
 the scanner and browser remain non-root. No live ADAPT or Remedy is contacted.
+
+The [non-release candidate workflow](docs/candidate-image.md) publishes an
+exact-source Linux amd64 component image in johnnyrobot’s GHCR namespace and
+reruns shipping proof after pulling its registry digest. Candidate publication
+does not close the assembled-stack or production release gates.

@@ -8,6 +8,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { AdaptRenderer } from '../../dist/renderer.js';
 import { JobLifetime } from '../../dist/lifecycle.js';
+import { ScanAdmission } from '../../dist/admission.js';
 import { buildConfig } from '../../dist/config.js';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -155,7 +156,7 @@ for (const stage of ['during launch', 'during connect']) {
   });
 }
 
-test('unexpected owner exit ends group ownership before delayed final cleanup', { timeout: 10000 }, async t => {
+test('held EPERM retains actual renderer cleanup and capacity until real ESRCH without late signals', { timeout: 10000 }, async t => {
   let worker;
   const spawn = childProcess.spawn;
   t.mock.method(childProcess, 'spawn', function (...args) {
@@ -169,26 +170,48 @@ test('unexpected owner exit ends group ownership before delayed final cleanup', 
   fixture.listen(0, '127.0.0.1'); await once(fixture, 'listening');
   t.after(async () => { fixture.closeAllConnections(); await new Promise(resolve => fixture.close(resolve)); });
   const base = `http://127.0.0.1:${fixture.address().port}`;
+  let held = true, probes = 0, observedGone = false, closed = false;
   const renderer = new AdaptRenderer(buildConfig({ ADAPT_BASE_URL: base, ADAPT_TOKEN: 'synthetic', SCAN_MODE: 'http', REMEDY_ENDPOINT: base, REMEDY_API_KEY: 'synthetic' }));
-  t.after(() => renderer.close());
+  t.after(() => { held = false; return renderer.close(); });
   await renderer.init(); await renderer.renderQuestion(1);
   const kill = process.kill.bind(process); const lateSignals = [];
-  let permissionRace = false;
   t.mock.method(process, 'kill', (pid, signal) => {
-    if (pid === -worker.pid && signal === 0 && !permissionRace) {
-      permissionRace = true;
-      throw Object.assign(new Error('synthetic exiting-group permission race'), { code: 'EPERM' });
+    if (pid === -worker.pid) {
+      // Hold permission denial for signals too: otherwise a legitimate ESRCH
+      // from SIGTERM/SIGKILL could end ownership before the held probe releases.
+      if (held) {
+        if (signal === 0) probes++;
+        throw Object.assign(new Error('synthetic exiting-group permission race'), { code: 'EPERM' });
+      }
+      if (signal !== 0 && observedGone) lateSignals.push(signal);
     }
-    return kill(pid, signal);
+    try { return kill(pid, signal); }
+    catch (error) {
+      if (pid === -worker.pid && signal === 0 && error.code === 'ESRCH') observedGone = true;
+      throw error;
+    }
   });
-  const exited = once(worker, 'exit'); process.kill(-worker.pid, 'SIGKILL'); await exited;
-  for (let i = 0; exists(-worker.pid) && i < 300; i++) await pause(10);
-  assert.ok(!exists(-worker.pid), 'original owned group has disappeared');
-  assert.ok(permissionRace, 'exercise the OS permission race without treating it as disappearance');
-  t.mock.method(process, 'kill', (pid, signal) => {
-    if (pid === -worker.pid && signal !== 0) lateSignals.push(signal);
-    return kill(pid, signal);
-  });
+  const exited = once(worker, 'exit'); kill(-worker.pid, 'SIGKILL'); await exited;
+  const admission = new ScanAdmission(1, 0);
+  const closing = admission.submit(new JobLifetime(8000), () => renderer.close()).then(() => { closed = true; });
+  // Check the real OS independently: the owner's probe is held at EPERM even
+  // after the actual group departs. Only its own later ESRCH may release it.
+  const realGroupExists = () => {
+    try { kill(-worker.pid, 0); return true; }
+    catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+  };
+  for (let i = 0; realGroupExists() && i < 300; i++) await pause(10);
+  assert.ok(!realGroupExists(), 'original owned group has disappeared');
+  await pause(100);
+  assert.equal(closed, false, 'renderer.close remains pending through held EPERM');
+  assert.ok(probes >= 2, 'hold repeated owner probes at EPERM');
+  assert.equal(admission.idle, false, 'actual renderer cleanup retains admission capacity');
+  await assert.rejects(admission.submit(new JobLifetime(1000), async () => 'unexpected'), /saturated/);
+  held = false;
+  await closing;
+  assert.equal(observedGone, true, 'only a later real ESRCH proves disappearance to the owner');
+  assert.equal(admission.idle, true);
+  assert.equal(await admission.submit(new JobLifetime(1000), async () => 'released'), 'released');
   // Represents later job cleanup after a slow validation response. The old
   // identifier may have been recycled by then; it must never be signalled.
   await pause(100); await renderer.close();
