@@ -19,7 +19,7 @@ for (const [path, digest] of [
 
 
 test('trustworthy capture through actual Chromium and scan job', { timeout: 90000 }, async t => {
-  let status = 200, redirect, validations = 0, captured = '', document = '<p>Synthetic no-math question</p>', framePath = '/api/get-header-html/7', outerForm = '';
+  let status = 200, redirect, validations = 0, captured = '', document = '<p>Synthetic no-math question</p>', framePath = '/api/get-header-html/7', outerForm = '', disguise = false;
   const assetRoot = resolve('node_modules/mathjax');
   const fixture = createServer(async (req, res) => {
     if (req.url.startsWith('/mathjax/')) {
@@ -30,6 +30,9 @@ test('trustworthy capture through actual Chromium and scan job', { timeout: 9000
         res.setHeader('content-type', path.endsWith('.js') ? 'text/javascript' : 'application/octet-stream'); res.end(data);
       } catch { res.writeHead(404).end(); }
       return;
+    }
+    if (disguise && req.url.startsWith('/login')) {
+      res.writeHead(200, { 'content-type': 'text/html' }).end('<script>history.replaceState(null,"","/api/get-header-html/7")</script><p>Unexpected document</p>'); return;
     }
     if (req.url === '/validate') {
       validations++; captured = '';
@@ -86,23 +89,32 @@ test('trustworthy capture through actual Chromium and scan job', { timeout: 9000
       }
       redirect = undefined;
     });
+    await t.test('a redirected document cannot hide its response identity with browser history', async () => {
+      const before = validations; redirect = '/login'; disguise = true;
+      try { const report = await scan(); assert.equal(report.exitCode, 1); assert.equal(validations, before); }
+      finally { redirect = undefined; disguise = false; }
+    });
     await t.test('valid no-math iframe and SPA captures reach validation', async () => {
+      const before = validations;
       for (const mode of ['iframe', 'spa']) {
         process.env.RENDER_MODE = mode;
         const report = await scan();
         assert.equal(report.exitCode, 0, report.results[0]?.error);
         assert.match(captured, /Synthetic no-math question/); captured = '';
       }
-      assert.equal(validations, 2);
+      process.env.RENDER_MODE = 'iframe';
+      assert.equal(validations, before + 2);
     });
     await t.test('SPA final content-frame status and identity are checked', async () => {
+      const before = validations; process.env.RENDER_MODE = 'spa';
+      try {
       for (const code of [401, 403, 404, 500]) {
         status = code;
         const report = await scan(); assert.equal(report.exitCode, 1); assert.equal(report.totals.scanned, 0);
       }
       status = 200; framePath = '/api/get-header-html/8';
-      const report = await scan(); assert.equal(report.exitCode, 1); assert.equal(validations, 2);
-      framePath = '/api/get-header-html/7'; process.env.RENDER_MODE = 'iframe';
+      const report = await scan(); assert.equal(report.exitCode, 1); assert.equal(validations, before);
+      } finally { framePath = '/api/get-header-html/7'; process.env.RENDER_MODE = 'iframe'; }
     });
     await t.test('outer SPA authentication documents fail even with a valid question frame', async () => {
       process.env.RENDER_MODE = 'spa'; outerForm = '<form><input type="password"></form>';
@@ -112,10 +124,11 @@ test('trustworthy capture through actual Chromium and scan job', { timeout: 9000
       } finally { outerForm = ''; process.env.RENDER_MODE = 'iframe'; }
     });
     await t.test('known math without a completing library is a readiness failure', async () => {
+      const before = validations;
       document = String.raw`<p>\(x^2+1\)</p>`;
       const report = await scan();
       assert.equal(report.exitCode, 1); assert.equal(report.totals.scanned, 0);
-      assert.match(report.results[0].error, /readiness/); assert.equal(validations, 2);
+      assert.match(report.results[0].error, /readiness/); assert.equal(validations, before);
     });
     await t.test('actual pinned MathJax typesets TeX and MathML in iframe and SPA', async () => {
       document = mathDocument();
@@ -163,19 +176,22 @@ test('trustworthy capture through actual Chromium and scan job', { timeout: 9000
       const report = await scan(); assert.equal(report.exitCode, 1); assert.equal(validations, before);
       assert.match(report.results[0].error, /readiness/);
     });
-    await t.test('busy, failed, unsupported and interrupted math never reaches validation', async () => {
-      const before = validations;
+    await t.test('busy, failed, unsupported and interrupted math never reaches validation', async t => {
       for (const [index, content] of [
         mathDocument('', '<script>MathJax.Hub.Register.StartupHook("End",function(){MathJax.Hub.Queue(function(){return MathJax.Callback({})})})</script>'),
         '<p>\\(x\\)</p><script src="/mathjax/missing.js"></script>',
         '<script>window.MathJax={version:"3.2.2"}</script><p>\\(x\\)</p>',
         mathDocument("delayStartupUntil:'configured'", '<script>setTimeout(()=>location.href="/login?token=do-not-report",900)</script>'),
         mathDocument('', '', '<p>\\(\\frac{\\)</p>'),
+        '<span class="MathJax_CHTML">Saved math without its library</span>',
+        mathDocument('', '', String.raw`<p>\(x\) then incomplete \(y</p>`),
       ].entries()) {
-        document = content;
+        await t.test(`math failure ${index}`, async () => {
+        const before = validations; document = content;
         const report = await scan(); assert.equal(report.exitCode, 1, `case ${index}`); assert.equal(report.totals.scanned, 0);
         assert.match(report.results[0].error, /readiness/); assert.doesNotMatch(report.results[0].error, /do-not-report/);
         assert.equal(validations, before);
+        });
       }
     });
   } finally {

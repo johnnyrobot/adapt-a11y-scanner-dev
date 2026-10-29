@@ -208,7 +208,7 @@ export class AdaptRenderer {
    * URL credentials, query, fragment and unknown paths (which may contain secrets). */
   private assertDocument(response: Response | null | undefined, actual: string, expected: string, stage: string): void {
     const diagnostic = this.documentDiagnostic(response, actual, stage);
-    if (actual !== new URL(expected).href || !response?.ok()) {
+    if (actual !== new URL(expected).href || response?.url() !== new URL(expected).href || !response?.ok()) {
       throw new Error(`capture rejected: ${diagnostic}`);
     }
     if (!/^(text\/html|application\/xhtml\+xml)(?:;|$)/i.test(response.headers()['content-type'] ?? '')) {
@@ -217,10 +217,27 @@ export class AdaptRenderer {
   }
 
   private documentDiagnostic(response: Response | null | undefined, actual: string, stage: string): string {
+    return `${stage} status=${response?.status() ?? 'missing'} location=${this.safeLocation(actual)}` +
+      (response ? ` response-location=${this.safeLocation(response.url())}` : '');
+  }
+
+  private safeLocation(actual: string): string {
     const location = new URL(actual);
     const safePath = /^\/(api\/get-header-html\/[0-9]+|assignments\/[0-9]+\/questions\/view\/[0-9]+|login)\/?$/.test(location.pathname)
       ? location.pathname : '/[unexpected-path]';
-    return `${stage} status=${response?.status() ?? 'missing'} location=${location.origin}${safePath}`;
+    return `${location.origin}${safePath}`;
+  }
+
+  private async hasRawTex(target: Frame | Page): Promise<boolean> {
+    return target.evaluate(() => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        if (node.parentElement?.closest('script, style, pre, code, textarea, .MathJax, .MathJax_Display, .MathJax_SVG, .MathJax_CHTML, .MJX_Assistive_MathML')) continue;
+        if (/\\\(|\\\[|\$\$/.test(node.textContent ?? '')) return true;
+      }
+      return false;
+    });
   }
 
   /** The v2 startup signal replays history. Queue a fresh Typeset after End,
@@ -228,21 +245,15 @@ export class AdaptRenderer {
   private async waitForMathJax(target: Frame | Page): Promise<void> {
     const deadline = Date.now() + this.cfg.mathjaxTimeoutMs;
     try {
-      const probe = await target.waitForFunction(() => {
+      const rawTex = await this.hasRawTex(target);
+      const probe = await target.waitForFunction(tex => {
         const mj = (window as unknown as { MathJax?: { version?: string; Hub?: unknown } }).MathJax;
         const declared = !!mj || !!document.querySelector('script[src*="MathJax" i], script[type="text/x-mathjax-config"]');
-        const math = !!document.querySelector('math, script[type^="math/"], .MathJax, .MathJax_SVG');
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-        let node: Node | null;
-        let tex = false;
-        while ((node = walker.nextNode())) {
-          if (node.parentElement?.closest('script, style, pre, code, textarea')) continue;
-          if (/\\\(|\\\[|\$\$/.test(node.textContent ?? '')) { tex = true; break; }
-        }
+        const math = !!document.querySelector('math, script[type^="math/"], .MathJax, .MathJax_SVG, .MathJax_Display, .MathJax_CHTML, .mjx-chtml, mjx-chtml, mjx-container');
         if (!declared && !math && !tex) return { required: false, mathDetected: false };
         if (mj?.version && !mj.version.startsWith('2.')) return { required: true, mathDetected: math || tex, unsupported: true };
         return mj?.Hub ? { required: true, mathDetected: math || tex, unsupported: false } : false;
-      }, undefined, { timeout: this.cfg.mathjaxTimeoutMs });
+      }, rawTex, { timeout: Math.max(1, deadline - Date.now()) });
       const state = await probe.jsonValue();
       await probe.dispose();
       if (!state || !state.required) return;
@@ -287,6 +298,7 @@ export class AdaptRenderer {
           });
         });
       }, { timeout: Math.max(1, deadline - Date.now()), mathDetected: state.mathDetected });
+      if (await this.hasRawTex(target)) throw new Error('unprocessed TeX remains');
     } catch (error) {
       // Browser/library errors can quote private question source or request URLs.
       const unsupported = (error as Error).message.includes('unsupported MathJax major');

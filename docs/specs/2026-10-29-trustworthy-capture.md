@@ -16,7 +16,8 @@ question route fail. An arbitrary HTTP-200 HTML body cannot be identified as an
 application error without an ADAPT content contract; identity is not inferred
 from body size or prose. Unknown frames cannot become the selected question.
 
-Check outer navigation and content response status, then recheck both identities
+Check outer navigation and content response status and response URL as well as
+the current browser URL (history manipulation cannot disguise a redirected response), then recheck both identities
 before capture. Failures return unsuccessful job results with zero scanned
 questions and no validator call. Diagnostics contain stage, HTTP status and safe
 origin/path, omit query/fragment/URL credentials and unknown paths, and never quote
@@ -34,7 +35,8 @@ fail explicitly. No fixed sleep or temporary queue-idle signal establishes ready
 For v2, observe the official replayable startup `End` hook, then queue a fresh
 `Typeset` of the content body and a completion callback. Inspect all resulting jax
 for actual rendered output, reject residual native MathML/unprocessed source
-scripts and error output. Retained Ajax load-error statuses and Hub processing errors are checked before
+scripts, residual TeX delimiters and error output. Saved CommonHTML markers also
+require a supported library/completion; they are not classified as no-math. Retained Ajax load-error statuses and Hub processing errors are checked before
 and after Typeset; signal observation also handles current errors. This retains
 failures even when startup clears signal history. File-load/processing errors, blocked queues, missing
 libraries, timeouts and interrupted documents fail before validation. Declared
