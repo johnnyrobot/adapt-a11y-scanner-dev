@@ -1,7 +1,7 @@
 # The base image tag MUST track the `playwright` version in package.json — the
 # bundled browser build and the client are version-locked, or chromium.launch()
 # fails at runtime. We also run `playwright install` below as belt-and-suspenders.
-FROM mcr.microsoft.com/playwright:v1.60.0-jammy
+FROM mcr.microsoft.com/playwright:v1.60.0-jammy@sha256:e1529a04087193966ea15d4a1617345bdaa0791690a24ab2c42b65f9ce5b2cdc
 
 WORKDIR /app
 

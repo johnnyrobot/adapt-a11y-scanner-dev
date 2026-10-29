@@ -46,8 +46,10 @@ the tested commit, Dockerfile/lock/profile hashes, build log, build metadata
 (manifest digest and provenance), image inspect (config image ID), container
 runtime flags and exit state, full test output, observer responses, and actual
 Chromium namespace/seccomp/PGID evidence. Distinguish the manifest digest from
-the image config ID. This job does not publish an image to a registry; recording
-these hashes does not by itself deliver a deployable registry reference.
+the image config ID. The standalone shipping job does not publish an image. The main-only
+[non-release candidate workflow](candidate-image.md) reuses this gate, publishes
+its saved image and repeats all proof against the exact pulled registry digest.
+Recording local build hashes alone does not deliver a registry reference.
 
 The proof requires all of:
 

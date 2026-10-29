@@ -8,6 +8,17 @@ const [container] = await read('container-final.json');
 const [image] = await read('image.json');
 const sandbox = await read('sandbox.json');
 const build = await read('build.json');
+const testLog = await readFile(join(directory, 'test.log'), 'utf8');
+const count = name => {
+  const matches = [...testLog.matchAll(new RegExp(`^# ${name} (\\d+)$`, 'gm'))];
+  assert.equal(matches.length, 1, `one complete TAP summary for ${name} required`);
+  return Number(matches[0][1]);
+};
+const tests = count('tests');
+assert.ok(tests > 0);
+assert.equal(count('pass'), tests);
+for (const name of ['fail', 'cancelled', 'skipped', 'todo']) assert.equal(count(name), 0, name);
+
 assert.equal(image.Os, 'linux'); assert.equal(image.Architecture, 'amd64');
 assert.equal(container.Image, image.Id);
 assert.equal(container.Config.User, 'pwuser');
@@ -41,6 +52,7 @@ for (const renderer of sandbox.cases[0].renderers) {
   assert.notEqual(renderer.pidNamespace, sandbox.parent.pidNamespace);
 }
 console.log(JSON.stringify({ image: image.Id, manifest: build['containerimage.digest'],
+  tests, skipped: 0,
   commit: (await readFile(join(directory, 'commit.txt'), 'utf8')).trim(),
   baselineFilters: sandbox.parent.seccompFilters,
   rendererFilters: sandbox.cases[0].renderers.map(renderer => renderer.seccompFilters) }, null, 2));

@@ -1,0 +1,97 @@
+name: Non-release candidate image
+
+on:
+  workflow_dispatch:
+
+# No workflow_run, PR artifact, caller-supplied ref, credential or namespace.
+permissions:
+  contents: read
+concurrency:
+  group: scanner-non-release-candidate
+  cancel-in-progress: false
+
+jobs:
+  native:
+    if: github.repository == 'johnnyrobot/adapt-a11y-scanner-dev' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/ci.yml
+  shipping:
+    if: github.repository == 'johnnyrobot/adapt-a11y-scanner-dev' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/shipping-runtime.yml
+    with:
+      export-image: true
+  publish:
+    needs: [native, shipping]
+    if: github.repository == 'johnnyrobot/adapt-a11y-scanner-dev' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    # The sole package-write job. Inputs are from successful jobs in THIS trusted
+    # main dispatch, never a PR/fork/workflow_run or a supplied artifact/run ID.
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Isolate ephemeral Docker authentication
+        run: echo "DOCKER_CONFIG=$RUNNER_TEMP/candidate-docker-auth" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - uses: actions/download-artifact@v4
+        with:
+          name: trusted-candidate-image
+          path: candidate-image
+      - name: Validate trusted source, inputs, archive and all image layers
+        id: identity
+        run: |
+          node .github/scripts/candidate-record.mjs validate
+          python3 .github/scripts/check-image-archive.py
+          docker load --input candidate-image/image.tar.gz
+      - name: Publish unique NON-RELEASE candidate without overwriting a tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ steps.identity.outputs.image }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          CONFIG_ID: ${{ steps.identity.outputs.config-id }}
+        run: |
+          mkdir -p registry-evidence
+          test "$(docker image inspect --format '{{.Id}}' "scanner-proof:${GITHUB_SHA}")" = "$CONFIG_ID"
+          node .github/scripts/candidate-registry.mjs preflight "$TAG"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u johnnyrobot --password-stdin
+          docker tag "scanner-proof:${GITHUB_SHA}" "$IMAGE:$TAG"
+          docker push "$IMAGE:$TAG" | tee registry-evidence/push.log
+          docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{json .Manifest}}' > registry-evidence/manifest.json
+          jq -er '.digest | select(test("^sha256:[a-f0-9]{64}$"))' registry-evidence/manifest.json > registry-evidence/digest.txt
+      - name: Pull exact registry digest and prove the uploaded image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ steps.identity.outputs.image }}
+          CONFIG_ID: ${{ steps.identity.outputs.config-id }}
+        run: |
+          digest=$(cat registry-evidence/digest.txt)
+          docker pull --platform linux/amd64 "$IMAGE@$digest"
+          docker image inspect "$IMAGE@$digest" > registry-evidence/image.json
+          node .github/scripts/candidate-registry.mjs visibility "$digest" > registry-evidence/visibility.txt
+          test "$(docker image inspect --format '{{.Id}}' "$IMAGE@$digest")" = "$CONFIG_ID"
+          # All proof commands now use the registry manifest reference, never
+          # scanner-proof:$SHA and never another build or host dist/browser.
+          cp candidate-image/build.json registry-evidence/build.json
+          git rev-parse HEAD > registry-evidence/commit.txt
+          sha256sum Dockerfile .dockerignore package-lock.json deploy/chromium-seccomp-amd64.json > registry-evidence/inputs.sha256
+          uname -a > registry-evidence/host.txt
+          docker version >> registry-evidence/host.txt
+          bash .github/scripts/prove-shipping-runtime.sh "$IMAGE@$digest" registry-evidence
+          node .github/scripts/candidate-record.mjs report
+      - name: Clear ephemeral registry authentication
+        if: always()
+        run: docker logout ghcr.io
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: non-release-candidate-registry-proof
+          path: registry-evidence/
+          if-no-files-found: warn
