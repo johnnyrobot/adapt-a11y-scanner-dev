@@ -32,14 +32,14 @@ node dist/index.js question 1234
 node dist/index.js assignment 5678
 ```
 
-Container build/CLI example (runtime policy setup required):
+Linux amd64 container build/CLI example (runtime policy setup required):
 
 First configure the [Chromium sandbox prerequisites](#chromium-sandbox-prerequisites),
 including a namespace-capable seccomp policy. The run line below illustrates
 CLI arguments; supply that runtime policy before using it.
 
 ```bash
-docker build -t adapt-a11y-scanner .
+docker build --platform linux/amd64 -t adapt-a11y-scanner .
 docker run --init --cap-drop ALL --security-opt no-new-privileges=true \
   --security-opt seccomp="$PWD/deploy/chromium-seccomp-amd64.json" \
   --shm-size 1g --stop-timeout 20 --env-file .env adapt-a11y-scanner assignment 5678

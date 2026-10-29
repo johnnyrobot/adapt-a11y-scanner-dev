@@ -20,7 +20,12 @@ assert.equal(container.HostConfig.PidMode, '');
 assert.equal(container.HostConfig.UsernsMode, '');
 assert.equal(container.Config.StopTimeout, 20);
 assert.ok(container.HostConfig.SecurityOpt.includes('no-new-privileges=true'));
-assert.ok(container.HostConfig.SecurityOpt.some(value => /^seccomp=/.test(value) && !value.includes('unconfined')));
+assert.equal(container.HostConfig.SecurityOpt.length, 2, 'no extra security-policy relaxation');
+const seccomp = container.HostConfig.SecurityOpt.find(value => value.startsWith('seccomp='));
+assert.ok(seccomp && !seccomp.includes('unconfined'));
+assert.deepEqual(JSON.parse(seccomp.slice('seccomp='.length)),
+  JSON.parse(await readFile('deploy/chromium-seccomp-amd64.json', 'utf8')),
+  'Docker must report exactly the reviewed profile');
 assert.ok(container.Mounts.filter(mount => mount.Destination !== '/evidence').every(mount => mount.RW === false));
 assert.equal(container.State.ExitCode, 0);
 assert.equal(container.State.OOMKilled, false);

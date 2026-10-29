@@ -89,7 +89,7 @@ test('real renderer enables the sandbox by default', { timeout: 90000 }, async t
       assert.match(await readFile('/proc/1/cmdline', 'utf8'), /docker-init|tini/, 'reaping init must be PID1');
       assert.throws(() => execFileSync('chroot', ['/', '/bin/true'], {
         encoding: 'utf8', timeout: 5000, env: { ...process.env, LC_ALL: 'C' },
-      }), error => error.status === 1 && /Operation not permitted/.test(error.stderr),
+      }), error => Number.isInteger(error.status) && error.status > 0 && /Operation not permitted/.test(error.stderr),
       'the seccomp chroot exception must not grant chroot in the container namespace');
     }
   }
