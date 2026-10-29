@@ -174,7 +174,15 @@ test('held EPERM retains actual renderer cleanup and capacity until real ESRCH w
   const renderer = new AdaptRenderer(buildConfig({ ADAPT_BASE_URL: base, ADAPT_TOKEN: 'synthetic', SCAN_MODE: 'http', REMEDY_ENDPOINT: base, REMEDY_API_KEY: 'synthetic' }));
   t.after(() => { held = false; return renderer.close(); });
   await renderer.init(); await renderer.renderQuestion(1);
-  const kill = process.kill.bind(process); const lateSignals = [];
+  const realKill = process.kill.bind(process); const lateSignals = [];
+  let realProbeDenials = 2;
+  const kill = (pid, signal) => {
+    if (pid === -worker.pid && signal === 0 && realProbeDenials > 0) {
+      realProbeDenials--;
+      throw Object.assign(new Error('synthetic transient macOS group-probe denial'), { code: 'EPERM' });
+    }
+    return realKill(pid, signal);
+  };
   t.mock.method(process, 'kill', (pid, signal) => {
     if (pid === -worker.pid) {
       // Hold permission denial for signals too: otherwise a legitimate ESRCH
@@ -198,10 +206,11 @@ test('held EPERM retains actual renderer cleanup and capacity until real ESRCH w
   // after the actual group departs. Only its own later ESRCH may release it.
   const realGroupExists = () => {
     try { kill(-worker.pid, 0); return true; }
-    catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+    catch (error) { if (error.code === 'ESRCH') return false; if (error.code === 'EPERM') return true; throw error; }
   };
   for (let i = 0; realGroupExists() && i < 300; i++) await pause(10);
   assert.ok(!realGroupExists(), 'original owned group has disappeared');
+  assert.equal(realProbeDenials, 0, 'independent OS probe retries transient macOS EPERM');
   await pause(100);
   assert.equal(closed, false, 'renderer.close remains pending through held EPERM');
   assert.ok(probes >= 2, 'hold repeated owner probes at EPERM');

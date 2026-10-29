@@ -55,9 +55,10 @@ if (mode === 'create') {
     assert.equal(pulled.Id, record.configId, 'pulled image must be the initially tested config');
     assert.ok(pulled.RepoDigests.includes(`${image}@${digest}`));
     const visibility = (await readFile('registry-evidence/visibility.txt', 'utf8')).trim();
-    assert.ok(['public', 'private', 'internal'].includes(visibility));
+    assert.ok(['public', 'private'].includes(visibility));
     await writeFile('registry-evidence/candidate.json', JSON.stringify({ ...record,
       manifestDigest: digest, pullReference: `${image}@${digest}`, visibility,
+      visibilityEvidence: 'exact authenticated manifest exists; anonymous registry read allowed or denied',
       workflowRun: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
       releaseGates: 'LT-114/LT-111 open: assembled stack, target host, credential rollout and global release approval pending',
     }, null, 2) + '\n');

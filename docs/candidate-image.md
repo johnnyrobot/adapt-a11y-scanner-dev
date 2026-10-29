@@ -39,7 +39,9 @@ non-release-<full source commit SHA>-<full SHA256 of input hashes>
 The combined hash covers Dockerfile, .dockerignore, package-lock.json and the
 reviewed seccomp profile. The candidate record includes each file's hash, full
 source, pinned base, archive hash and image config ID. Workflow runs serialize;
-publication refuses any already-used tag. GHCR itself does not enforce tag
+publication refuses any already-used tag through an authenticated GHCR
+manifest lookup with pull+push scope. Denied access and registry errors cannot
+count as an absent tag. GHCR itself does not enforce tag
 immutability, so consumers must always use the recorded manifest digest.
 
 After push, the job resolves the registry manifest digest and pulls that exact
@@ -59,7 +61,12 @@ config ID. Treat a pushed image without a successful exact-digest proof as an
 **unverified non-release artifact**. Never infer success from push alone.
 
 Read `candidate.json` for the exact pull reference and observed package
-visibility; the workflow does not change visibility. For a public package, the
+visibility; the workflow does not change visibility. Visibility is observed in
+this fixed personal namespace by proving the exact digest exists with auth,
+then testing anonymous registry access. Only explicit registry access denial
+counts as private; rate/service/missing-manifest errors fail. The
+[GitHub user-package metadata endpoints](https://docs.github.com/en/rest/packages/packages#list-package-versions-for-a-package-owned-by-a-user)
+describe public packages and are not used for private-package checks. For a public package, the
 recorded digest pulls anonymously. A private package requires the eventual
 operator's existing package read access. Provisioning production pull credentials
 or changing package visibility remains an operator decision. If GitHub denies

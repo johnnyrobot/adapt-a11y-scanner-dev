@@ -60,27 +60,22 @@ jobs:
         run: |
           mkdir -p registry-evidence
           test "$(docker image inspect --format '{{.Id}}' "scanner-proof:${GITHUB_SHA}")" = "$CONFIG_ID"
-          # A missing/inaccessible package cannot be overwritten without write
-          # access; all other API failures stop publication. Serialize our runs.
-          if gh api --paginate --slurp /users/johnnyrobot/packages/container/adapt-a11y-scanner-dev-candidate/versions > "$RUNNER_TEMP/package-versions.json" 2> "$RUNNER_TEMP/package-error.txt"; then
-            jq -e --arg tag "$TAG" '[.[][] | .metadata.container.tags[]] | index($tag) == null' "$RUNNER_TEMP/package-versions.json"
-          else
-            grep -q 'HTTP 404' "$RUNNER_TEMP/package-error.txt" || { cat "$RUNNER_TEMP/package-error.txt"; exit 1; }
-          fi
+          node .github/scripts/candidate-registry.mjs preflight "$TAG"
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u johnnyrobot --password-stdin
           docker tag "scanner-proof:${GITHUB_SHA}" "$IMAGE:$TAG"
           docker push "$IMAGE:$TAG" | tee registry-evidence/push.log
           docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{json .Manifest}}' > registry-evidence/manifest.json
           jq -er '.digest | select(test("^sha256:[a-f0-9]{64}$"))' registry-evidence/manifest.json > registry-evidence/digest.txt
-          gh api /users/johnnyrobot/packages/container/adapt-a11y-scanner-dev-candidate --jq .visibility > registry-evidence/visibility.txt
       - name: Pull exact registry digest and prove the uploaded image
         env:
+          GH_TOKEN: ${{ github.token }}
           IMAGE: ${{ steps.identity.outputs.image }}
           CONFIG_ID: ${{ steps.identity.outputs.config-id }}
         run: |
           digest=$(cat registry-evidence/digest.txt)
           docker pull --platform linux/amd64 "$IMAGE@$digest"
           docker image inspect "$IMAGE@$digest" > registry-evidence/image.json
+          node .github/scripts/candidate-registry.mjs visibility "$digest" > registry-evidence/visibility.txt
           test "$(docker image inspect --format '{{.Id}}' "$IMAGE@$digest")" = "$CONFIG_ID"
           # All proof commands now use the registry manifest reference, never
           # scanner-proof:$SHA and never another build or host dist/browser.
