@@ -53,7 +53,7 @@ export class AdaptRenderer {
     // Keep the Chromium sandbox ON by default (run as non-root pwuser in the
     // container). Only disable it via CHROMIUM_NO_SANDBOX when running as root (M6).
     const args = this.cfg.chromiumNoSandbox ? ['--no-sandbox'] : [];
-    this.browser = await chromium.launch({ args });
+    this.browser = await chromium.launch({ chromiumSandbox: !this.cfg.chromiumNoSandbox, args });
     try {
       this.ctx = await this.browser.newContext();
       this.token = await this.resolveToken();
