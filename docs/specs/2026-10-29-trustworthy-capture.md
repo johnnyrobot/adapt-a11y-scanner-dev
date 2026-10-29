@@ -11,7 +11,7 @@ question route are eligible for validation: `/api/get-header-html/{questionId}`
 or SPA `/assignments/{assignmentId}/questions/view/{questionId}` plus its content
 frame at the former route. Query/fragment changes and different IDs/origins fail.
 Same-final-route redirects are accepted only if the final response is successful
-HTML. No login or alternative-route allowlist is inferred. Password forms at the
+HTML. No login or alternative-route allowlist is inferred. Password forms in the outer SPA document or content
 question route fail. An arbitrary HTTP-200 HTML body cannot be identified as an
 application error without an ADAPT content contract; identity is not inferred
 from body size or prose. Unknown frames cannot become the selected question.
@@ -34,7 +34,9 @@ fail explicitly. No fixed sleep or temporary queue-idle signal establishes ready
 For v2, observe the official replayable startup `End` hook, then queue a fresh
 `Typeset` of the content body and a completion callback. Inspect all resulting jax
 for actual rendered output, reject residual native MathML/unprocessed source
-scripts and error output. File-load/processing errors, blocked queues, missing
+scripts and error output. Retained Ajax load-error statuses and Hub processing errors are checked before
+and after Typeset; signal observation also handles current errors. This retains
+failures even when startup clears signal history. File-load/processing errors, blocked queues, missing
 libraries, timeouts and interrupted documents fail before validation. Declared
 libraries on no-math questions must still finish startup and the queued Typeset.
 

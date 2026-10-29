@@ -19,7 +19,7 @@ for (const [path, digest] of [
 
 
 test('trustworthy capture through actual Chromium and scan job', { timeout: 90000 }, async t => {
-  let status = 200, redirect, validations = 0, captured = '', document = '<p>Synthetic no-math question</p>', framePath = '/api/get-header-html/7';
+  let status = 200, redirect, validations = 0, captured = '', document = '<p>Synthetic no-math question</p>', framePath = '/api/get-header-html/7', outerForm = '';
   const assetRoot = resolve('node_modules/mathjax');
   const fixture = createServer(async (req, res) => {
     if (req.url.startsWith('/mathjax/')) {
@@ -36,7 +36,7 @@ test('trustworthy capture through actual Chromium and scan job', { timeout: 9000
       for await (const chunk of req) captured += chunk;
       res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(pass));
     } else if (req.url === '/assignments/42/questions/view/7') {
-      res.writeHead(200, { 'content-type': 'text/html' }).end(`<iframe src="${framePath}"></iframe>`);
+      res.writeHead(200, { 'content-type': 'text/html' }).end(`${outerForm}<iframe src="${framePath}"></iframe>`);
     } else if (req.url === '/api/get-header-html/7') {
       if (redirect && req.headers.host.startsWith('127.0.0.1')) { res.writeHead(302, { location: redirect }).end(); return; }
       res.writeHead(status, { 'content-type': 'text/html' });
@@ -104,6 +104,13 @@ test('trustworthy capture through actual Chromium and scan job', { timeout: 9000
       const report = await scan(); assert.equal(report.exitCode, 1); assert.equal(validations, 2);
       framePath = '/api/get-header-html/7'; process.env.RENDER_MODE = 'iframe';
     });
+    await t.test('outer SPA authentication documents fail even with a valid question frame', async () => {
+      process.env.RENDER_MODE = 'spa'; outerForm = '<form><input type="password"></form>';
+      const before = validations;
+      try {
+        const report = await scan(); assert.equal(report.exitCode, 1); assert.equal(validations, before);
+      } finally { outerForm = ''; process.env.RENDER_MODE = 'iframe'; }
+    });
     await t.test('known math without a completing library is a readiness failure', async () => {
       document = String.raw`<p>\(x^2+1\)</p>`;
       const report = await scan();
@@ -135,6 +142,11 @@ test('trustworthy capture through actual Chromium and scan job', { timeout: 9000
       const report = await scan(); assert.equal(report.exitCode, 0, report.results[0]?.error);
       assert.ok(captured.includes('id="MathJax-Element-2-Frame"'), 'both real math sources rendered'); captured = '';
     });
+    await t.test('completed real CommonHTML output is accepted', async () => {
+      document = mathDocument().replace("menuSettings:{renderer:'SVG'}", "menuSettings:{renderer:'CommonHTML'}");
+      const report = await scan(); assert.equal(report.exitCode, 0, report.results[0]?.error);
+      assert.ok(/class="[^"]*MathJax_CHTML/.test(captured), 'actual CommonHTML output required'); captured = '';
+    });
     await t.test('declared configuration waits for a delayed actual loader', async () => {
       document = mathDocument().replace('<script src="/mathjax/MathJax.js?config=TeX-AMS_HTML"></script>',
         '<script>setTimeout(()=>{const s=document.createElement("script");s.src="/mathjax/MathJax.js?config=TeX-AMS_HTML";document.head.append(s)},900)</script>');
@@ -144,6 +156,12 @@ test('trustworthy capture through actual Chromium and scan job', { timeout: 9000
     await t.test('declared loader with no math must still finish supported startup', async () => {
       document = mathDocument('', '', '<p>No math with a loader</p>');
       const report = await scan(); assert.equal(report.exitCode, 0, report.results[0]?.error);
+    });
+    await t.test('extension load failure before observation cannot become a clean no-math capture', async () => {
+      const before = validations;
+      document = mathDocument('', '', '<p>Declared library, no math</p>').replace("extensions:['tex2jax.js','mml2jax.js']", "extensions:['tex2jax.js','mml2jax.js','/mathjax/missing-optional.js']");
+      const report = await scan(); assert.equal(report.exitCode, 1); assert.equal(validations, before);
+      assert.match(report.results[0].error, /readiness/);
     });
     await t.test('busy, failed, unsupported and interrupted math never reaches validation', async () => {
       const before = validations;

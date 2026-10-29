@@ -122,20 +122,19 @@ export class AdaptRenderer {
     page.on('response', response => {
       if (response.request().isNavigationRequest()) documents.set(response.frame(), response);
     });
+    let target: Frame | Page = page;
+    const url = this.cfg.renderMode === 'spa'
+      ? `${this.cfg.adaptBaseUrl}/assignments/${assignmentId}/questions/view/${questionId}`
+      : `${this.cfg.adaptBaseUrl}/api/get-header-html/${questionId}`;
     try {
-      let target: Frame | Page;
-      let url: string;
-
       if (this.cfg.renderMode === 'spa') {
         if (assignmentId == null) throw new Error('SPA render mode needs an assignmentId');
-        url = `${this.cfg.adaptBaseUrl}/assignments/${assignmentId}/questions/view/${questionId}`;
         const response = await page.goto(url, { waitUntil: 'networkidle' });
         this.assertDocument(response, page.url(), url, 'outer navigation');
         target = await this.waitForContentFrame(page, questionId);
         this.assertDocument(documents.get(target), target.url(), `${this.cfg.adaptBaseUrl}/api/get-header-html/${questionId}`, 'content frame');
       } else {
         // iframe mode: the question's content document, served standalone.
-        url = `${this.cfg.adaptBaseUrl}/api/get-header-html/${questionId}`;
         const response = await page.goto(url, { waitUntil: 'networkidle' });
         this.assertDocument(response, page.url(), url, 'question navigation');
         target = page;
@@ -147,15 +146,19 @@ export class AdaptRenderer {
       const frame = target === page ? page.mainFrame() : target as Frame;
       this.assertDocument(documents.get(frame), target.url(), this.cfg.renderMode === 'spa'
         ? `${this.cfg.adaptBaseUrl}/api/get-header-html/${questionId}` : url, 'content capture');
-      if (await target.locator('input[type="password"]').count()) {
-        throw new Error('capture authentication document: password input at question route');
+      for (const document of new Set([page, target])) {
+        if (await document.locator('input[type="password"]').count()) {
+          throw new Error('capture authentication document: password input at question route');
+        }
       }
       const html = await target.content();
       return { url, html };
     } catch (error) {
       const message = (error as Error).message;
-      if (message.startsWith('capture ') || message.startsWith('readiness ')) throw error;
-      throw new Error('capture navigation failed, timed out or interrupted');
+      const frame = target === page ? page.mainFrame() : target as Frame;
+      const diagnostic = this.documentDiagnostic(documents.get(frame), target.url(), 'capture state');
+      if (message.startsWith('capture ') || message.startsWith('readiness ')) throw new Error(`${message}; ${diagnostic}`);
+      throw new Error(`capture navigation failed, timed out or interrupted; ${diagnostic}`);
     } finally {
       await page.close();
     }
@@ -204,16 +207,20 @@ export class AdaptRenderer {
   /** Only the exact source-backed question routes are accepted. Diagnostics omit
    * URL credentials, query, fragment and unknown paths (which may contain secrets). */
   private assertDocument(response: Response | null | undefined, actual: string, expected: string, stage: string): void {
-    const location = new URL(actual);
-    const safePath = /^\/(api\/get-header-html\/[0-9]+|assignments\/[0-9]+\/questions\/view\/[0-9]+|login)\/?$/.test(location.pathname)
-      ? location.pathname : '/[unexpected-path]';
-    const diagnostic = `${stage} status=${response?.status() ?? 'missing'} location=${location.origin}${safePath}`;
+    const diagnostic = this.documentDiagnostic(response, actual, stage);
     if (actual !== new URL(expected).href || !response?.ok()) {
       throw new Error(`capture rejected: ${diagnostic}`);
     }
     if (!/^(text\/html|application\/xhtml\+xml)(?:;|$)/i.test(response.headers()['content-type'] ?? '')) {
       throw new Error(`capture non-HTML document: ${diagnostic}`);
     }
+  }
+
+  private documentDiagnostic(response: Response | null | undefined, actual: string, stage: string): string {
+    const location = new URL(actual);
+    const safePath = /^\/(api\/get-header-html\/[0-9]+|assignments\/[0-9]+\/questions\/view\/[0-9]+|login)\/?$/.test(location.pathname)
+      ? location.pathname : '/[unexpected-path]';
+    return `${stage} status=${response?.status() ?? 'missing'} location=${location.origin}${safePath}`;
   }
 
   /** The v2 startup signal replays history. Queue a fresh Typeset after End,
@@ -232,47 +239,54 @@ export class AdaptRenderer {
           if (node.parentElement?.closest('script, style, pre, code, textarea')) continue;
           if (/\\\(|\\\[|\$\$/.test(node.textContent ?? '')) { tex = true; break; }
         }
-        if (!declared && !math && !tex) return { required: false, known: false };
-        if (mj?.version && !mj.version.startsWith('2.')) return { required: true, known: math || tex, unsupported: true };
-        return mj?.Hub ? { required: true, known: math || tex, unsupported: false } : false;
+        if (!declared && !math && !tex) return { required: false, mathDetected: false };
+        if (mj?.version && !mj.version.startsWith('2.')) return { required: true, mathDetected: math || tex, unsupported: true };
+        return mj?.Hub ? { required: true, mathDetected: math || tex, unsupported: false } : false;
       }, undefined, { timeout: this.cfg.mathjaxTimeoutMs });
       const state = await probe.jsonValue();
       await probe.dispose();
       if (!state || !state.required) return;
       if (state.unsupported) throw new Error('unsupported MathJax major');
-      await target.evaluate(async ({ timeout, known }) => {
+      await target.evaluate(async ({ timeout, mathDetected }) => {
         interface Jax { inputID: string; }
         interface Hub {
-          Register: { StartupHook: (name: string, fn: () => void) => void; MessageHook: (name: string, fn: () => void) => void };
+          Register: { StartupHook: (name: string, fn: () => void) => void };
           Queue: (...callbacks: unknown[]) => void;
           getAllJax: () => Jax[];
+          lastError?: unknown;
+          signal: { Interest: (fn: (message: string | unknown[]) => void) => void };
         }
-        const mj = (window as unknown as { MathJax: { version: string; Hub: Hub } }).MathJax;
+        const mj = (window as unknown as { MathJax: { version: string; Hub: Hub; Ajax: { loaded: Record<string, number>; STATUS: { ERROR: number } } } }).MathJax;
         if (!mj.version?.startsWith('2.')) throw new Error('unsupported MathJax major');
         const hub = mj.Hub;
         await new Promise<void>((resolve, reject) => {
           const timer = setTimeout(() => reject(new Error('MathJax completion timeout')), timeout);
           const fail = () => { clearTimeout(timer); reject(new Error('MathJax typesetting failed')); };
-          hub.Register.MessageHook('file load error', fail);
-          hub.Register.MessageHook('Math Processing Error', fail);
+          // Ajax.loaded retains failures even when startup clears Hub history.
+          const libraryFailed = () => !!hub.lastError || Object.values(mj.Ajax.loaded).includes(mj.Ajax.STATUS.ERROR);
+          if (libraryFailed()) { fail(); return; }
+          hub.signal.Interest(message => {
+            const type = Array.isArray(message) ? message[0] : message;
+            if (type === 'file load error' || type === 'Math Processing Error') fail();
+          });
           hub.Register.StartupHook('End', () => {
             hub.Queue(['Typeset', hub, document.body], () => {
-              clearTimeout(timer);
               const jax = hub.getAllJax();
               const scripts = document.querySelectorAll('script[type^="math/"]');
               const incomplete = jax.some(j => {
                 const output = document.getElementById(`${j.inputID}-Frame`);
-                return !output || !output.querySelector('svg') && !output.matches('.MathJax, .MathJax_Display');
+                return !output || !output.querySelector('svg') && !output.matches('.MathJax, .MathJax_Display, .MathJax_CHTML');
               });
               // Native MathML and source scripts must be consumed by a real jax.
               const raw = document.querySelector('body math:not(.MJX_Assistive_MathML math)');
               const errors = document.querySelector('.MathJax_Error, .merror, .mjx-merror, .MJXp-merror, .noError');
-              if (incomplete || raw || errors || scripts.length !== jax.length || known && jax.length === 0) { fail(); return; }
+              if (libraryFailed() || incomplete || raw || errors || scripts.length !== jax.length || mathDetected && jax.length === 0) { fail(); return; }
+              clearTimeout(timer);
               resolve();
             });
           });
         });
-      }, { timeout: Math.max(1, deadline - Date.now()), known: state.known });
+      }, { timeout: Math.max(1, deadline - Date.now()), mathDetected: state.mathDetected });
     } catch (error) {
       // Browser/library errors can quote private question source or request URLs.
       const unsupported = (error as Error).message.includes('unsupported MathJax major');
