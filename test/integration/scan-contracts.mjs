@@ -79,8 +79,8 @@ test('source-backed contracts through real renderer, job, CLI and HTTP API', { t
       once(api, 'exit').then(() => { throw new Error(`API exited: ${apiErrors}`); }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('API startup timeout')), 5000).unref()),
     ]);
-    const post = async () => {
-      const response = await fetch(`http://127.0.0.1:${port}/v1/adapt/scan`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': 'synthetic-scanner-key' }, body: JSON.stringify({ mode: 'assignment', id: 42 }), signal: AbortSignal.timeout(15000) });
+    const post = async (id = 42) => {
+      const response = await fetch(`http://127.0.0.1:${port}/v1/adapt/scan`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': 'synthetic-scanner-key' }, body: JSON.stringify({ mode: 'assignment', id }), signal: AbortSignal.timeout(15000) });
       return { status: response.status, body: await response.json() };
     };
     await t.test('HTTP empty work is ok=false, never a fabricated question failure', async () => {
@@ -99,6 +99,11 @@ test('source-backed contracts through real renderer, job, CLI and HTTP API', { t
       }
       const result = await cli(childEnv);
       assert.equal(result.code, 3); assert.match(result.stderr, /contract/);
+      assert.equal(validations, 0);
+    });
+    await t.test('invalid assignment IDs are client errors without validation calls', async () => {
+      const result = await post(-1);
+      assert.equal(result.status, 400); assert.equal(result.body.ok, false);
       assert.equal(validations, 0);
     });
     assignment = { type: 'success', question_ids_array: [7] };
