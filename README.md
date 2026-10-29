@@ -110,6 +110,34 @@ named `token`. The bridge sets that cookie from `ADAPT_TOKEN` (or mints one via
 `/api/login`). **In production, issue a dedicated service-account token** rather
 than using a human password.
 
+## Supported response contracts
+
+Assignment enumeration uses `GET /api/assignments/{id}/questions/ids`, requiring
+`type: "success"` and a real `question_ids_array`. IDs must be positive safe
+integer numbers or positive decimal-digit strings; strings retain their exact
+form. `type: "error"` is unsuccessful even with HTTP 200. The older
+`get-questions-info` endpoint returns assignment metadata, not a question list;
+guessed list keys and the JSON-encoded `question_ids` duplicate are unsupported.
+
+A recognized empty assignment returns zero totals/results, `exitCode: 1`,
+`outcome: "no_work"` and a message. The HTTP API returns 200 with `ok: false`;
+the CLI exits 1. Unknown/malformed envelopes are contract errors, not no-work.
+Nonempty report fields retain their existing meaning.
+
+Remedy HTTP responses must contain the full typed validation envelope, including
+per-tool results. Malformed findings and contradictory clean passes fail before
+normalization. Warning and null-impact findings remain warnings; an explicit
+false verdict with no findings remains unsuccessful. Human-readable summaries
+are never parsed for control flow. The WAVE empty/passed field is a placeholder
+in this endpoint, not evidence that WAVE ran.
+
+[LT-120 contract spec](docs/specs/2026-10-29-scan-contracts.md) records the exact
+fields and fixtures: Server source `78710dc` and ADAPT source `ee9478b`. These are
+supported source snapshots; compatibility with a live deployment still requires
+verification. Fixture generation used real Server orchestration/serialization
+with synthetic tool adapters, not live tools or HTTP. Fixture `contract_id` is
+documentation metadata, not a required field in a Server response.
+
 ## What this repo is — and what your team still owns
 
 This is a **working, deployable bridge** and the integration spec — *not* a
@@ -143,8 +171,10 @@ response-mapping/severity (`scanner`), env validation (`config`), and the
 fail-closed CI gate (`report`). CI runs typecheck + build + tests
 (`.github/workflows/ci.yml`).
 
-`npm run test:browser` additionally exercises real Chromium through the renderer
-with loopback fixtures and fake credentials. Install the locked browser first
+`npm run test:browser` additionally exercises real Chromium through the renderer,
+job, CLI and HTTP API with loopback fixtures and fake credentials. It verifies
+source-backed contracts, no-work, operational failures and sandbox behavior.
+Install the locked browser first
 with `npx --no-install playwright install chromium`. The dedicated Ubuntu 22.04 /
 Node 22 CI job installs Linux system dependencies, requires non-root execution,
 and records actual process arguments plus renderer namespace/seccomp evidence.

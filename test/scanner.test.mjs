@@ -6,6 +6,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   normalize,
   normalizeCore,
@@ -16,6 +17,9 @@ import {
   backoffMs,
   parseJsonStrict,
 } from '../dist/scanner.js';
+
+const manifest = JSON.parse(readFileSync(new URL('./fixtures/contracts/v1/remedy-html-validation.json', import.meta.url)));
+const example = name => structuredClone(manifest.examples.find(e => e.name === name).body);
 
 test('parseRetryAfterMs parses delta-seconds and ignores junk (MF-6)', () => {
   assert.equal(parseRetryAfterMs('2'), 2000);
@@ -106,22 +110,15 @@ test('normalize leaves wcag/selector/snippet undefined for lighthouse-shaped ite
 });
 
 test('parseRemedyResponse reads all_violations and overall_passed', () => {
-  const body = {
-    axe: { score: 1, passed: false, violations: [] },
-    overall_passed: false,
-    all_violations: [
-      { id: 'image-alt', impact: 'critical', tool: 'axe', description: 'x' },
-      { id: 'link-name', impact: 'serious', tool: 'axe', description: 'y' },
-    ],
-  };
+  const body = example('accessibility_failure');
   const { findings, overallPassed } = parseRemedyResponse(body);
-  assert.equal(findings.length, 2);
-  assert.equal(findings.filter((f) => f.severity === 'error').length, 2);
+  assert.equal(findings.length, 1);
+  assert.equal(findings.filter((f) => f.severity === 'error').length, 1);
   assert.equal(overallPassed, false);
 });
 
 test('parseRemedyResponse: a passing report yields no error findings and overallPassed true', () => {
-  const { findings, overallPassed } = parseRemedyResponse({ overall_passed: true, all_violations: [] });
+  const { findings, overallPassed } = parseRemedyResponse(example('pass'));
   assert.equal(findings.length, 0);
   assert.equal(overallPassed, true);
 });
@@ -129,9 +126,7 @@ test('parseRemedyResponse: a passing report yields no error findings and overall
 test('parseRemedyResponse treats a missing/legacy shape as fail-closed (no silent pass)', () => {
   // Old code returned [] + exit 0 for an unrecognized shape. The verdict must
   // not silently read "passed" when the server gave us nothing recognizable.
-  const { findings, overallPassed } = parseRemedyResponse({ findings: [{ ruleId: 'x' }] });
-  assert.equal(findings.length, 0); // we no longer read the legacy `findings` key
-  assert.equal(overallPassed, false); // missing overall_passed => not passed
+  assert.throws(() => parseRemedyResponse({ findings: [{ ruleId: 'x' }] }), /contract/);
 });
 
 test('mapImpact canonicalizes casing and padding', () => {

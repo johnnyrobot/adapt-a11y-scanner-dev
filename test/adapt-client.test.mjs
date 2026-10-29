@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { listAssignmentQuestions } from '../dist/adapt-client.js';
 
-const okBody = JSON.stringify({ questions: [{ id: 7, title: 'Q7' }] });
+const okBody = JSON.stringify({ type: 'success', question_ids_array: [7] });
 
 function stubFetch(handler) {
   const original = globalThis.fetch;
@@ -83,7 +83,7 @@ test('surfaces a non-ok ADAPT response as an error', async () => {
   try {
     await assert.rejects(
       () => listAssignmentQuestions('https://adapt.test', 'tok', 42, 1000),
-      /get-questions-info 503/,
+      /questions\/ids 503/,
     );
   } finally {
     restore();
