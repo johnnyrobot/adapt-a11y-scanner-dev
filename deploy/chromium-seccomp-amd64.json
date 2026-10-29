@@ -11,6 +11,11 @@
   ],
   "syscalls": [
     {
+      "comment": "Chromium chroots inside its new user namespace; kernel capability checks still deny it in the unprivileged container namespace.",
+      "names": ["chroot"],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
       "comment": "Allow create user namespaces",
       "names": [
         "clone",

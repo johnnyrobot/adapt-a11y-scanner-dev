@@ -68,9 +68,22 @@ architecture metadata to amd64/x86 compatibility, removes capability-dependent
 allowances (cap_drop ALL is mandatory) and irrelevant architecture allowances,
 and returns ENOSYS for clone3. clone3 is not allowed: its pointed-to flags cannot
 be filtered directly; ENOSYS allows the existing clone fallback used by libc.
-No mount, kernel-module, keyring, bpf or other privileged syscall exception is
-added. This is a namespace-capable baseline, not a claim of a minimal per-Node
+The policy also permits chroot so Chromium can confine itself **inside its new
+user namespace**. Kernel capability checks still deny chroot to the non-root,
+zero-capability container parent; the shipping test explicitly requires that
+denial. No CAP_SYS_CHROOT is added. No mount, kernel-module, keyring or bpf
+exception is added. This is a namespace-capable baseline, not a claim of a minimal per-Node
 syscall allowlist or a general container-escape defense.
+
+This exception is evidence-backed: actual-image runs 40876802797 and
+40877615773 failed under the original profile. The unchanged-policy diagnostic
+proved unshare succeeds, while Chromium fails with
+`Check failed: sys_chroot("/proc/self/fdinfo/") == 0`. Chromium 148.0.7778.96
+`sandbox/linux/services/credentials.cc`, `ChrootToSelfFdinfo`, requires that
+call. The original Docker capability-conditioned chroot allowance does not apply
+when ALL capabilities are dropped. The narrow syscall exception retains the
+same UID, cap_drop ALL, no-new-privileges, namespace and seccomp requirements.
+See [Chromium's exact source](https://github.com/chromium/chromium/blob/148.0.7778.96/sandbox/linux/services/credentials.cc).
 
 The host must already support unprivileged user/PID namespaces and Chromium's
 seccomp sandbox. AppArmor/LSM, kernel, rootless Docker, userns-remap or nested
