@@ -6,6 +6,31 @@ are synthetic loopback fixtures inside the container. The container has no
 external network. This is component runtime proof, not assembled-stack or live
 ADAPT/Remedy compatibility. LT-114 and LT-111 remain open.
 
+## Verified component evidence
+
+[Shipping run 40879204497](https://github.com/johnnyrobot/adapt-a11y-scanner-dev/actions/runs/40879204497)
+passed at commit `ff586dd0ff511223e005bbaa71d02d505dc326c8`:
+70 actual in-image checks passed, zero failed/skipped. The artifact verifier was
+also rerun against the downloaded evidence. Host: Ubuntu 22.04, Linux
+6.8.0-1070-azure x86_64, Docker 28.0.4. Shipping runtime: Node 24.15.0,
+Playwright 1.60.0, Chromium 148.0.7778.96.
+
+| Evidence | Recorded value |
+|---|---|
+| Built manifest digest | `sha256:62582f9cfc407dc3c24b0e87f3c1d4d8a420abb819fef4e5679dec9007ce65ac` |
+| Image config ID | `sha256:78cde6da5a5fa3d39f3265a31b5f5a91ae3c0318bf0f12171e55bea2faf30220` |
+| Resolved Playwright base digest | `sha256:e1529a04087193966ea15d4a1617345bdaa0791690a24ab2c42b65f9ce5b2cdc` |
+| Reviewed/applied seccomp file SHA-256 | `d4447d241bf9c65e1698fc8508438c128dc000e3b0519b8e12e4afa4c8ae5d44` |
+| Parent/browser vs renderer filter count | `1` vs `2`; all Seccomp 2, NoNewPrivs 1, UID 1000, effective capabilities 0 |
+| Browser/GPU/network/renderer PGID | `62`, matching owned worker PID `62` |
+| Actual Docker stop | `119ms`, exit 0, two truthful HTTP 503/ok:false responses, 20-second grace |
+
+Actual renderer user/PID namespace identities differ from the parent/browser;
+the artifact retains host/container PID mapping and links. Absolute PID/namespace
+numbers above are observations of this run, not configuration. Later commits
+adding documentation do not change the recorded tested commit. A new CI build
+records its own digests; these hashes do not identify a published registry image.
+
 ## Reproduce and inspect
 
 The `Shipping runtime` GitHub workflow runs on Ubuntu 22.04, Linux amd64. It
