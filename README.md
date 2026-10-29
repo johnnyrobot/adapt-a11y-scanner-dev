@@ -227,7 +227,9 @@ codes, containerization.
   `@libretexts/remedy-core` installed (`SCAN_MODE=in-process`, dev-only)
 
 ## Tests
-`npm test` builds and runs the unit suite (`node:test`, zero extra deps):
+`npm test` requires Python 3 for the synthetic Docker/OCI archive checks and
+builds/runs the helper suite with `node:test`. It does not need Docker or a
+browser:
 response-mapping/severity (`scanner`), env validation (`config`), and the
 fail-closed CI gate (`report`). CI runs typecheck + build + tests
 (`.github/workflows/ci.yml`).
