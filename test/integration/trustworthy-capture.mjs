@@ -7,6 +7,8 @@ import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { resolve, sep } from 'node:path';
 import { runAdaptScan } from '../../dist/job.js';
+import { AdaptRenderer } from '../../dist/renderer.js';
+import { buildConfig } from '../../dist/config.js';
 
 const contract = JSON.parse(await readFile(new URL('../fixtures/contracts/v1/remedy-html-validation.json', import.meta.url)));
 const pass = contract.examples.find(e => e.name === 'pass').body;
@@ -169,6 +171,20 @@ test('trustworthy capture through actual Chromium and scan job', { timeout: 9000
     await t.test('declared loader with no math must still finish supported startup', async () => {
       document = mathDocument('', '', '<p>No math with a loader</p>');
       const report = await scan(); assert.equal(report.exitCode, 0, report.results[0]?.error);
+    });
+    await t.test('page-controlled timers cannot suppress the host math deadline or block the next question', async () => {
+      document = mathDocument("delayStartupUntil:'configured'", '<script>window.setTimeout=()=>0</script>');
+      const renderer = new AdaptRenderer(buildConfig(env));
+      await renderer.init();
+      // Teardown guard makes the old bug fail without leaking its actual browser.
+      const guard = setTimeout(() => { void renderer.close(); }, 5000);
+      try {
+        const started = Date.now();
+        await assert.rejects(renderer.renderQuestion(7), /readiness/);
+        assert.ok(Date.now() - started < 4000, 'host math deadline must end actual page work');
+        clearTimeout(guard); document = '<p>Next valid question</p>';
+        const next = await renderer.renderQuestion(7); assert.match(next.html, /Next valid question/);
+      } finally { clearTimeout(guard); await renderer.close(); }
     });
     await t.test('extension load failure before observation cannot become a clean no-math capture', async () => {
       const before = validations;

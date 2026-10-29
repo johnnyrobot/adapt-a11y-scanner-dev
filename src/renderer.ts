@@ -140,7 +140,11 @@ export class AdaptRenderer {
         target = page;
       }
 
-      await this.waitForMathJax(target);
+      // The question can replace page-global timers. Enforce this deadline in
+      // Node and close actual page work, rather than merely racing its promise.
+      const mathDeadline = setTimeout(() => { void page.close().catch(() => {}); }, this.cfg.mathjaxTimeoutMs);
+      try { await this.waitForMathJax(target); }
+      finally { clearTimeout(mathDeadline); }
       // Re-check identities after readiness: scripts may navigate while typesetting.
       this.assertDocument(documents.get(page.mainFrame()), page.url(), url, 'outer capture');
       const frame = target === page ? page.mainFrame() : target as Frame;
