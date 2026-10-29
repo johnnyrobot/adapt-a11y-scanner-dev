@@ -31,7 +31,9 @@ child hosts Playwright's loopback-only BrowserServer and publishes its endpoint
 through private IPC. No endpoint is exposed through HTTP/error reports. The host
 bounds launch AND connect, closes real browser work on cancellation, escalates
 only its own process group after five seconds, and awaits actual worker reaping
-AND group disappearance. A private temporary directory holds browser profiles;
+AND group disappearance. Unexpected worker exit starts cleanup immediately; once
+the group is observed gone, the identifier is permanently ineligible for signals
+so delayed validator completion cannot signal a recycled group. A private temporary directory holds browser profiles;
 it is removed only after the group exits. PID guessing and global process kills
 are not used.
 
@@ -58,7 +60,7 @@ no_work, LT-118/119 identity/readiness, sandboxing and networkidle are preserved
 
 ## Executed verification
 
-Local final checks: typecheck, 53 unit tests and 68 actual browser/job/CLI/API
+Local final checks: typecheck, 53 unit tests and 70 actual browser/job/CLI/API
 checks passed, zero failures/skips. All providers are synthetic loopback
 ADAPT/Remedy fixtures with fake credentials. No live instance, deployment,
 container/Compose or TestSprite run is claimed. Native Linux namespace/seccomp
@@ -71,8 +73,9 @@ validation response bodies, partial incoming upload expiry and shutdown.
 Provider socket-close and post-abort observations establish no late calls; OS
 process observations establish actual owned descendants exit before capacity is
 reused. Forced SIGSTOP tests cover before/during actual launch, during connect,
-actual API shutdown during startup/connect, and retained capacity during forced
-cleanup. Sandbox variants and a real OS launch failure retain no-retry behavior.
+actual API shutdown during startup/connect, the independent five-second startup
+cap under a longer job deadline, unexpected owner exit before delayed cleanup,
+and retained capacity during forced cleanup. Sandbox variants and a real OS launch failure retain no-retry behavior.
 
 Representative red evidence, followed by green checks:
 
@@ -81,6 +84,7 @@ HTTP limits: undefined !== 1
 Overload: 200 !== 503
 Shutdown during login: 504 !== 503
 Partial upload at a22c53d: connection 'keep-alive' !== 'close'
+Unexpected owner exit: lateSignals ['SIGTERM'] !== []
 Old startup path: no owned worker before downstream login/startup wait
 ```
 

@@ -14,6 +14,7 @@ export class OwnedBrowser {
   private readonly endpoint: Promise<string>;
   private rejectEndpoint!: (error: Error) => void;
   private closing?: Promise<void>;
+  private groupGone = false;
   private readonly startupTimer: ReturnType<typeof setTimeout>;
   private startupFailure?: Error;
 
@@ -30,7 +31,12 @@ export class OwnedBrowser {
       env: { ...process.env, TMPDIR: this.directory },
     });
     this.exited = new Promise(resolve => {
-      this.child.once('exit', () => resolve());
+      this.child.once('exit', () => {
+        resolve();
+        // End ownership immediately, even while the job awaits an external
+        // validator. Never retain a reaped process identifier for later kills.
+        void this.close().catch(() => {});
+      });
       this.child.once('error', () => { if (!this.child.pid) resolve(); });
     });
     this.endpoint = new Promise((resolve, reject) => {
@@ -70,9 +76,9 @@ export class OwnedBrowser {
 
   private signalGroup(signal: NodeJS.Signals | 0): boolean {
     const pid = this.child.pid;
-    if (!pid) return false; // spawn failed: no owned group was created
+    if (this.groupGone || !pid) return false; // spawn failed: no owned group was created
     try { process.kill(-pid, signal); return true; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false; throw error; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') { this.groupGone = true; return false; } throw error; }
   }
 
   private async closeGroup(): Promise<void> {
@@ -81,7 +87,7 @@ export class OwnedBrowser {
     if (this.child.connected) this.child.send('close', () => {});
     // Signal also handles worker startup before its IPC listener was installed.
     // An early SIGTERM exits Node; group verification below still cleans children.
-    this.signalGroup('SIGTERM');
+    if (this.signalGroup(0)) this.signalGroup('SIGTERM');
     const timer = setTimeout(() => { this.signalGroup('SIGKILL'); }, 5000);
     try {
       await this.exited;

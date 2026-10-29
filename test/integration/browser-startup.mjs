@@ -13,7 +13,7 @@ import { buildConfig } from '../../dist/config.js';
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const exists = pid => { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; } };
 
-for (const stage of ['before launch', 'during launch', 'during connect']) {
+for (const stage of ['before launch', 'during launch', 'during connect', 'startup cap']) {
   test(`deadline cancels owned browser ${stage}, waits for group exit and prevents downstream work`, { timeout: 15000 }, async t => {
     const folder = await mkdtemp(join(tmpdir(), 'scanner-startup-'));
     t.after(() => rm(folder, { recursive: true, force: true }));
@@ -21,7 +21,7 @@ for (const stage of ['before launch', 'during launch', 'during connect']) {
     await writeFile(preload, `
       import cp from 'node:child_process';
       if (process.argv[1]?.endsWith('/browser-worker.js')) {
-        if (${JSON.stringify(stage)} === 'before launch') process.kill(process.pid, 'SIGSTOP');
+        if (${JSON.stringify(stage)} === 'before launch' || ${JSON.stringify(stage)} === 'startup cap') process.kill(process.pid, 'SIGSTOP');
         else if (${JSON.stringify(stage)} === 'during launch') {
           const spawn = cp.spawn;
           cp.spawn = function (...args) {
@@ -57,13 +57,13 @@ for (const stage of ['before launch', 'during launch', 'during connect']) {
     t.after(async () => { fixture.closeAllConnections(); await new Promise(resolve => fixture.close(resolve)); });
     const base = `http://127.0.0.1:${fixture.address().port}`;
     const cfg = buildConfig({ ADAPT_BASE_URL: base, ADAPT_TOKEN: '', ADAPT_EMAIL: 'fake@example.invalid', ADAPT_PASSWORD: 'fake', SCAN_MODE: 'http', REMEDY_ENDPOINT: `${base}/validate`, REMEDY_API_KEY: 'fake', NAV_TIMEOUT_MS: '10000' });
-    const lifetime = new JobLifetime(stage === 'during connect' ? 1500 : 700);
+    const lifetime = new JobLifetime(stage === 'startup cap' ? 20000 : stage === 'during connect' ? 1500 : 700);
     const renderer = new AdaptRenderer(cfg, lifetime);
     t.after(async () => { if (worker?.pid && exists(worker.pid)) process.kill(-worker.pid, 'SIGKILL'); await renderer.close(); lifetime.dispose(); });
     const started = Date.now();
-    await assert.rejects(renderer.init(), /deadline/);
+    await assert.rejects(renderer.init(), stage === 'startup cap' ? /Browser startup timed out/ : /deadline/);
     assert.ok(worker?.pid, 'startup was actually attempted in an owned child');
-    assert.ok(Date.now() - started < 8500, 'deadline plus cleanup allowance is bounded');
+    assert.ok(Date.now() - started < (stage === 'startup cap' ? 12000 : 8500), 'deadline plus cleanup allowance is bounded');
     assert.ok(!exists(worker.pid), 'owned worker has been reaped before init rejects');
     assert.ok(!exists(-worker.pid), 'entire owned process group has exited before init rejects');
     assert.ok(workerDirectory, 'browser temporary files have an owned directory');
@@ -154,3 +154,34 @@ for (const stage of ['during launch', 'during connect']) {
     await pause(100); assert.deepEqual(calls, []);
   });
 }
+
+test('unexpected owner exit ends group ownership before delayed final cleanup', { timeout: 10000 }, async t => {
+  let worker;
+  const spawn = childProcess.spawn;
+  t.mock.method(childProcess, 'spawn', function (...args) {
+    const child = spawn.apply(this, args);
+    if (args[1]?.some(arg => String(arg).endsWith('/browser-worker.js'))) worker = child;
+    return child;
+  });
+  const fixture = createServer((req, res) => {
+    res.setHeader('content-type', 'text/html'); res.end('<!doctype html><p>Synthetic captured question</p>');
+  });
+  fixture.listen(0, '127.0.0.1'); await once(fixture, 'listening');
+  t.after(async () => { fixture.closeAllConnections(); await new Promise(resolve => fixture.close(resolve)); });
+  const base = `http://127.0.0.1:${fixture.address().port}`;
+  const renderer = new AdaptRenderer(buildConfig({ ADAPT_BASE_URL: base, ADAPT_TOKEN: 'synthetic', SCAN_MODE: 'http', REMEDY_ENDPOINT: base, REMEDY_API_KEY: 'synthetic' }));
+  t.after(() => renderer.close());
+  await renderer.init(); await renderer.renderQuestion(1);
+  const exited = once(worker, 'exit'); process.kill(-worker.pid, 'SIGKILL'); await exited;
+  for (let i = 0; exists(-worker.pid) && i < 300; i++) await pause(10);
+  assert.ok(!exists(-worker.pid), 'original owned group has disappeared');
+  const kill = process.kill.bind(process); const lateSignals = [];
+  t.mock.method(process, 'kill', (pid, signal) => {
+    if (pid === -worker.pid && signal !== 0) lateSignals.push(signal);
+    return kill(pid, signal);
+  });
+  // Represents later job cleanup after a slow validation response. The old
+  // identifier may have been recycled by then; it must never be signalled.
+  await pause(100); await renderer.close();
+  assert.deepEqual(lateSignals, []);
+});
