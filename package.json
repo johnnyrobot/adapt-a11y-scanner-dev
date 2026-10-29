@@ -12,7 +12,8 @@
     "serve": "node dist/server.js",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test \"test/**/*.test.mjs\""
+    "test": "npm run build && node --test \"test/**/*.test.mjs\"",
+    "test:browser": "npm run build && DOTENV_CONFIG_PATH=/dev/null node --test test/integration/renderer-sandbox.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

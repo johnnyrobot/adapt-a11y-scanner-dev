@@ -69,7 +69,7 @@ server must run its full `runtime` image — the `runtime-slim` target disables
 | `REMEDY_ENDPOINT` | remedy-server URL when `SCAN_MODE=http` |
 | `REMEDY_API_KEY` | **Required for `http`** — remedy-server API key, sent as `X-API-Key` (must equal the server's `APP_API_KEY`) |
 | `REMEDY_TIMEOUT_MS` | max wait for the synchronous remedy scan (default `240000`) |
-| `CHROMIUM_NO_SANDBOX` | set `1` only when running as root; otherwise leave the sandbox on |
+| `CHROMIUM_NO_SANDBOX` | deliberate sandbox opt-out (`1` or `true`); leave unset for sandboxed non-root execution |
 | `MATHJAX_TIMEOUT_MS` / `NAV_TIMEOUT_MS` | render/wait tuning |
 
 ### Two scan modes
@@ -82,6 +82,22 @@ server must run its full `runtime` image — the `runtime-slim` target disables
 - **`in-process`** (**dev-only**): imports `@libretexts/remedy-core` and scans
   in the same process. Not wired for production transfer — you must install/link
   that package yourself (it is not a published dependency).
+
+### Chromium sandbox prerequisites
+
+The renderer explicitly enables Chromium's sandbox by default. Run as a
+non-root user on Linux with user/PID namespaces and seccomp available. A sandbox
+startup failure is returned to the caller; there is no automatic unsandboxed
+retry. `CHROMIUM_NO_SANDBOX=1` or `true` deliberately disables this isolation;
+it is not a production deployment remedy for missing host prerequisites.
+
+The Dockerfile uses non-root `pwuser` and a browser image matching the locked
+Playwright version. Container execution also needs a namespace-capable seccomp
+policy; follow [Playwright's non-root container guidance](https://playwright.dev/docs/docker#crawling-and-scraping).
+Do not disable sandboxing or host-wide security to make it launch. Native Linux
+CI proves the real renderer's launch arguments, namespace/seccomp isolation and
+synthetic capture; shipping-container and Compose compatibility require separate
+validation before deployment.
 
 ## How it authenticates
 ADAPT's API guard is JWT (`tymon/jwt-auth`); the SPA reads the JWT from a cookie
@@ -121,3 +137,14 @@ codes, containerization.
 response-mapping/severity (`scanner`), env validation (`config`), and the
 fail-closed CI gate (`report`). CI runs typecheck + build + tests
 (`.github/workflows/ci.yml`).
+
+`npm run test:browser` additionally exercises real Chromium through the renderer
+with loopback fixtures and fake credentials. Install the locked browser first
+with `npx --no-install playwright install chromium`. The dedicated Ubuntu 22.04 /
+Node 22 CI job installs Linux system dependencies, requires non-root execution,
+and records actual process arguments plus renderer namespace/seccomp evidence.
+It fails if required Linux evidence is unavailable; missing prerequisites are
+not skipped. This integration suite currently supports macOS and native Linux;
+on macOS it checks launch arguments/capture, not Linux isolation. Linux `/proc`
+namespace links may require read-only, passwordless `sudo readlink` inspection;
+the scanner and browser remain non-root. No live ADAPT or Remedy is contacted.
