@@ -60,7 +60,8 @@ test('real renderer enables the sandbox by default', { timeout: 90000 }, async t
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
-  const launch = chromium.launch.bind(chromium);
+  const launch = chromium.launchServer.bind(chromium);
+  const connect = chromium.connect.bind(chromium);
   try {
     // Each variant launches the actual renderer. Observation delegates to real
     // Chromium and adds no production hook or access to renderer private state.
@@ -69,9 +70,12 @@ test('real renderer enables the sandbox by default', { timeout: 90000 }, async t
         const disabled = value === '1' || value === 'true';
         let browser;
         let options;
-        t.mock.method(chromium, 'launch', async opts => {
+        t.mock.method(chromium, 'launchServer', async opts => {
           options = opts;
-          browser = await launch(opts);
+          return launch(opts);
+        });
+        t.mock.method(chromium, 'connect', async (...args) => {
+          browser = await connect(...args);
           return browser;
         });
         const cfg = buildConfig({
@@ -147,7 +151,7 @@ test('real renderer enables the sandbox by default', { timeout: 90000 }, async t
 
 test('sandbox launch failure propagates without an unsandboxed retry', async t => {
   const failure = new Error('synthetic sandbox launch failure');
-  const launch = t.mock.method(chromium, 'launch', async () => { throw failure; });
+  const launch = t.mock.method(chromium, 'launchServer', async () => { throw failure; });
   const cfg = buildConfig({
     ADAPT_BASE_URL: 'http://127.0.0.1', ADAPT_TOKEN: 'synthetic-token',
     SCAN_MODE: 'http', REMEDY_ENDPOINT: 'http://127.0.0.1/unused', REMEDY_API_KEY: 'synthetic-key',

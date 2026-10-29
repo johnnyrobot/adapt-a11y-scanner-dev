@@ -9,8 +9,9 @@
  *
  * One browser is reused across many questions for batch efficiency.
  */
-import { chromium, type Browser, type BrowserContext, type Frame, type Page, type Response } from 'playwright';
+import { chromium, type Browser, type BrowserServer, type BrowserContext, type Frame, type Page, type Response } from 'playwright';
 import type { Config } from './config.js';
+import type { JobLifetime } from './lifecycle.js';
 
 export interface RenderedQuestion {
   url: string;
@@ -44,17 +45,26 @@ export function buildTokenCookie(
 
 export class AdaptRenderer {
   private browser?: Browser;
+  private browserServer?: BrowserServer;
+  private closing?: Promise<void>;
+  private readonly abort = () => { void this.close(); };
   private ctx?: BrowserContext;
   private token?: string;
 
-  constructor(private readonly cfg: Config) {}
+  constructor(private readonly cfg: Config, private readonly lifetime?: JobLifetime) {}
+
+  private timeout(cap: number): number { return this.lifetime?.timeout(cap) ?? cap; }
 
   async init(): Promise<void> {
     // Keep the Chromium sandbox ON by default (run as non-root pwuser in the
     // container). Only disable it via CHROMIUM_NO_SANDBOX when running as root (M6).
     const args = this.cfg.chromiumNoSandbox ? ['--no-sandbox'] : [];
-    this.browser = await chromium.launch({ chromiumSandbox: !this.cfg.chromiumNoSandbox, args });
+    this.lifetime?.check();
+    this.browserServer = await chromium.launchServer({ host: '127.0.0.1', handleSIGTERM: false, handleSIGINT: false, handleSIGHUP: false, chromiumSandbox: !this.cfg.chromiumNoSandbox, args, timeout: this.timeout(Math.min(5000, this.cfg.navTimeoutMs)) });
+    this.lifetime?.signal.addEventListener('abort', this.abort, { once: true });
     try {
+      this.lifetime?.check();
+      this.browser = await chromium.connect(this.browserServer.wsEndpoint(), { timeout: this.timeout(this.cfg.navTimeoutMs) });
       this.ctx = await this.browser.newContext();
       this.token = await this.resolveToken();
       await this.ctx.addCookies([buildTokenCookie(this.token, this.cfg.adaptBaseUrl)]);
@@ -75,7 +85,8 @@ export class AdaptRenderer {
   private async resolveToken(): Promise<string> {
     if (this.cfg.adaptToken) return this.cfg.adaptToken;
     const page = await this.ctx!.newPage();
-    page.setDefaultTimeout(this.cfg.navTimeoutMs);
+    page.setDefaultTimeout(this.timeout(this.cfg.navTimeoutMs));
+    page.setDefaultNavigationTimeout(this.timeout(this.cfg.navTimeoutMs));
     try {
       // In-page fetch so the request uses the browser's resolver (handles both
       // real domains and *.localhost dev hosts).
@@ -96,7 +107,7 @@ export class AdaptRenderer {
           base: this.cfg.adaptBaseUrl,
           email: this.cfg.adaptEmail,
           password: this.cfg.adaptPassword,
-          timeout: this.cfg.navTimeoutMs,
+          timeout: this.timeout(this.cfg.navTimeoutMs),
         },
       );
       if (!token) throw new Error('ADAPT login returned no token');
@@ -115,8 +126,10 @@ export class AdaptRenderer {
     if (assignmentId != null && !isValidId(assignmentId)) {
       throw new Error(`Invalid assignmentId (must be numeric): ${JSON.stringify(assignmentId)}`);
     }
+    this.lifetime?.check();
     const page = await this.ctx.newPage();
-    page.setDefaultTimeout(this.cfg.navTimeoutMs);
+    page.setDefaultTimeout(this.timeout(this.cfg.navTimeoutMs));
+    page.setDefaultNavigationTimeout(this.timeout(this.cfg.navTimeoutMs));
     // Record document responses before navigation, including SPA child frames.
     const documents = new Map<Frame, Response>();
     page.on('response', response => {
@@ -140,7 +153,9 @@ export class AdaptRenderer {
         target = page;
       }
 
+      this.lifetime?.check();
       await this.waitForMathJax(target);
+      this.lifetime?.check();
       // Re-check identities after readiness: scripts may navigate while typesetting.
       this.assertDocument(documents.get(page.mainFrame()), page.url(), url, 'outer capture');
       const frame = target === page ? page.mainFrame() : target as Frame;
@@ -152,8 +167,10 @@ export class AdaptRenderer {
         }
       }
       const html = await target.content();
+      this.lifetime?.check();
       return { url, html };
     } catch (error) {
+      this.lifetime?.check();
       const message = (error as Error).message;
       const frame = target === page ? page.mainFrame() : target as Frame;
       const diagnostic = this.documentDiagnostic(documents.get(frame), target.url(), 'capture state');
@@ -170,8 +187,9 @@ export class AdaptRenderer {
     // overran a tight NAV_TIMEOUT_MS (a 10s CI gate still waited 30s) and cut
     // short a deliberately generous one.
     const pollMs = 1000;
-    const deadline = Date.now() + this.cfg.navTimeoutMs;
+    const deadline = Date.now() + this.timeout(this.cfg.navTimeoutMs);
     for (;;) {
+      this.lifetime?.check();
       const expected = new URL(`${this.cfg.adaptBaseUrl}/api/get-header-html/${questionId}`);
       const candidates = page.frames().filter(f => f !== page.mainFrame());
       let frame = candidates.find(f => f.url() === expected.href);
@@ -189,7 +207,7 @@ export class AdaptRenderer {
       if (frame) {
         const ready = await frame.evaluate(() => document.readyState === 'complete').catch(() => false);
         if (ready) {
-          await frame.waitForLoadState('networkidle', { timeout: Math.max(1, deadline - Date.now()) });
+          await frame.waitForLoadState('networkidle', { timeout: this.timeout(Math.max(1, deadline - Date.now())) });
           return frame;
         }
       }
@@ -208,7 +226,7 @@ export class AdaptRenderer {
    * URL credentials, query, fragment and unknown paths (which may contain secrets). */
   private assertDocument(response: Response | null | undefined, actual: string, expected: string, stage: string): void {
     const diagnostic = this.documentDiagnostic(response, actual, stage);
-    if (actual !== new URL(expected).href || !response?.ok()) {
+    if (actual !== new URL(expected).href || response?.url() !== new URL(expected).href || !response?.ok()) {
       throw new Error(`capture rejected: ${diagnostic}`);
     }
     if (!/^(text\/html|application\/xhtml\+xml)(?:;|$)/i.test(response.headers()['content-type'] ?? '')) {
@@ -217,32 +235,43 @@ export class AdaptRenderer {
   }
 
   private documentDiagnostic(response: Response | null | undefined, actual: string, stage: string): string {
+    return `${stage} status=${response?.status() ?? 'missing'} location=${this.safeLocation(actual)}` +
+      (response ? ` response-location=${this.safeLocation(response.url())}` : '');
+  }
+
+  private safeLocation(actual: string): string {
     const location = new URL(actual);
     const safePath = /^\/(api\/get-header-html\/[0-9]+|assignments\/[0-9]+\/questions\/view\/[0-9]+|login)\/?$/.test(location.pathname)
       ? location.pathname : '/[unexpected-path]';
-    return `${stage} status=${response?.status() ?? 'missing'} location=${location.origin}${safePath}`;
+    return `${location.origin}${safePath}`;
+  }
+
+  private async hasRawTex(target: Frame | Page): Promise<boolean> {
+    return target.evaluate(() => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        if (node.parentElement?.closest('script, style, pre, code, textarea, .MathJax, .MathJax_Display, .MathJax_SVG, .MathJax_CHTML, .MJX_Assistive_MathML')) continue;
+        if (/\\\(|\\\[|\$\$/.test(node.textContent ?? '')) return true;
+      }
+      return false;
+    });
   }
 
   /** The v2 startup signal replays history. Queue a fresh Typeset after End,
    * then inspect actual output; an idle queue alone proves nothing. */
   private async waitForMathJax(target: Frame | Page): Promise<void> {
-    const deadline = Date.now() + this.cfg.mathjaxTimeoutMs;
+    const deadline = Date.now() + this.timeout(this.cfg.mathjaxTimeoutMs);
     try {
-      const probe = await target.waitForFunction(() => {
+      const rawTex = await this.hasRawTex(target);
+      const probe = await target.waitForFunction(tex => {
         const mj = (window as unknown as { MathJax?: { version?: string; Hub?: unknown } }).MathJax;
         const declared = !!mj || !!document.querySelector('script[src*="MathJax" i], script[type="text/x-mathjax-config"]');
-        const math = !!document.querySelector('math, script[type^="math/"], .MathJax, .MathJax_SVG');
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-        let node: Node | null;
-        let tex = false;
-        while ((node = walker.nextNode())) {
-          if (node.parentElement?.closest('script, style, pre, code, textarea')) continue;
-          if (/\\\(|\\\[|\$\$/.test(node.textContent ?? '')) { tex = true; break; }
-        }
+        const math = !!document.querySelector('math, script[type^="math/"], .MathJax, .MathJax_SVG, .MathJax_Display, .MathJax_CHTML, .mjx-chtml, mjx-chtml, mjx-container');
         if (!declared && !math && !tex) return { required: false, mathDetected: false };
         if (mj?.version && !mj.version.startsWith('2.')) return { required: true, mathDetected: math || tex, unsupported: true };
         return mj?.Hub ? { required: true, mathDetected: math || tex, unsupported: false } : false;
-      }, undefined, { timeout: this.cfg.mathjaxTimeoutMs });
+      }, rawTex, { timeout: this.timeout(Math.max(1, deadline - Date.now())) });
       const state = await probe.jsonValue();
       await probe.dispose();
       if (!state || !state.required) return;
@@ -286,7 +315,8 @@ export class AdaptRenderer {
             });
           });
         });
-      }, { timeout: Math.max(1, deadline - Date.now()), mathDetected: state.mathDetected });
+      }, { timeout: this.timeout(Math.max(1, deadline - Date.now())), mathDetected: state.mathDetected });
+      if (await this.hasRawTex(target)) throw new Error('unprocessed TeX remains');
     } catch (error) {
       // Browser/library errors can quote private question source or request URLs.
       const unsupported = (error as Error).message.includes('unsupported MathJax major');
@@ -294,19 +324,33 @@ export class AdaptRenderer {
     }
   }
 
-  async close(): Promise<void> {
-    // Each step guarded so a context-close failure still closes the browser (L2).
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
+    this.closing = this.closeOwnedBrowser();
+    return this.closing;
+  }
+
+  private async closeOwnedBrowser(): Promise<void> {
+    // launchServer owns the child. Playwright kill() kills its process tree and
+    // waits for exit; never release job capacity just because a promise raced.
+    const server = this.browserServer;
+    let killError: unknown;
+    const killTimer = server ? setTimeout(() => {
+      void server.kill().catch(error => { killError = error; });
+    }, 5000) : undefined;
     try {
-      await this.ctx?.close();
-    } catch {
-      /* ignore */
+      try { await this.ctx?.close(); } catch { /* browser close still required */ }
+      if (server) {
+        try { await server.close(); } catch { await server.kill(); }
+      }
+      else await this.browser?.close();
+      if (killError) throw killError;
+    } finally {
+      clearTimeout(killTimer);
+      this.lifetime?.signal.removeEventListener('abort', this.abort);
+      this.ctx = undefined;
+      this.browser = undefined;
+      this.browserServer = undefined;
     }
-    try {
-      await this.browser?.close();
-    } catch {
-      /* ignore */
-    }
-    this.ctx = undefined;
-    this.browser = undefined;
   }
 }

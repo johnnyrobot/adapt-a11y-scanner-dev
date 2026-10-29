@@ -78,3 +78,15 @@ test('enforces https on ADAPT_BASE_URL except for localhost dev (H3)', () => {
   assert.throws(() => buildConfig({ ...base, ADAPT_BASE_URL: 'http://adapt.example.org' }), /https/);
   assert.equal(buildConfig({ ...base, ADAPT_BASE_URL: 'http://adapt.libretexts.localhost' }).adaptBaseUrl, 'http://adapt.libretexts.localhost');
 });
+
+test('HTTP lifecycle limits are finite integers and deadlines fit Node timers', () => {
+  const cfg = buildConfig(base);
+  assert.equal(cfg.maxActiveJobs, 1);
+  assert.equal(cfg.maxQueuedJobs, 8);
+  assert.equal(cfg.jobTimeoutMs, 900000);
+  for (const key of ['SCANNER_MAX_ACTIVE_JOBS', 'SCANNER_MAX_QUEUED_JOBS', 'SCANNER_JOB_TIMEOUT_MS']) {
+    for (const value of ['0', '-1', 'Infinity', 'NaN', '1.5', '2147483648']) {
+      assert.throws(() => buildConfig({ ...base, [key]: value }), new RegExp(key));
+    }
+  }
+});
