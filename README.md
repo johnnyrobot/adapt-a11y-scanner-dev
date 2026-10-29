@@ -32,7 +32,11 @@ node dist/index.js question 1234
 node dist/index.js assignment 5678
 ```
 
-Or as a container:
+Container build/CLI example (runtime policy setup required):
+
+First configure the [Chromium sandbox prerequisites](#chromium-sandbox-prerequisites),
+including a namespace-capable seccomp policy. The run line below illustrates
+CLI arguments; supply that runtime policy before using it.
 
 ```bash
 docker build -t adapt-a11y-scanner .
@@ -53,7 +57,8 @@ wires the full stack, and it is the recommended starting point.
 
 To run this scanner as a one-shot job against a server you already have, see
 [`deploy/docker-compose.example.yml`](deploy/docker-compose.example.yml) (join the
-server's network, or point `REMEDY_ENDPOINT` at its public Caddy endpoint). The
+server's network, or point `REMEDY_ENDPOINT` at its public Caddy endpoint). That
+example also requires the sandbox runtime policy described below. The
 server must run its full `runtime` image — the `runtime-slim` target disables
 `/v1/validate/html`.
 
