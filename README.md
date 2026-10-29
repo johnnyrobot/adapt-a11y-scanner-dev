@@ -155,9 +155,11 @@ server must run its full `runtime` image — the `runtime-slim` target disables
 
 ### API, CLI and readiness
 
-After configuring an approved environment, `npm run serve` starts the HTTP API;
-the container service entrypoint is `node dist/server.js`. To bind a local
-operator instance explicitly, use `SCANNER_HOST=127.0.0.1 npm run serve`.
+After configuring an approved environment, `npm run serve` starts the HTTP API.
+The image defaults to the CLI (`node dist/index.js`); API deployments must
+explicitly override its entrypoint to `node dist/server.js`, as shown in the
+shipping-runtime guide. To bind a local operator instance explicitly, use
+`SCANNER_HOST=127.0.0.1 npm run serve`.
 `POST /v1/adapt/scan` requires `X-API-Key` matching `SCANNER_API_KEY` and a JSON
 body such as `{"mode":"question","id":1234}` or
 `{"mode":"assignment","id":5678}`. SPA question requests also require
