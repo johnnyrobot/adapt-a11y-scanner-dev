@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { readFile, readlink, writeFile, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, readlink, writeFile, rename, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import childProcess, { execFileSync } from 'node:child_process';
@@ -14,6 +14,34 @@ import { buildConfig } from '../../dist/config.js';
 
 const evidence = { node: process.version, platform: process.platform, cases: [] };
 const isLinux = process.platform === 'linux';
+const inShippingContainer = process.env.SANDBOX_CONTAINER_REQUIRED === '1';
+
+// A sandbox renderer can deny even same-UID namespace reads. The CI host
+// observer reads only processes returned by docker top for this test container;
+// no inspection capability or root user is added to the production container.
+async function containerNamespaces(pid) {
+  const directory = process.env.SANDBOX_AUDIT_DIR;
+  assert.ok(directory, 'shipping-container proof requires a host namespace observer');
+  const requestId = `${process.pid}-${pid}-${Date.now()}`;
+  await writeFile(`${directory}/${requestId}.request.tmp`, JSON.stringify({ pid, requestId }));
+  await rename(`${directory}/${requestId}.request.tmp`, `${directory}/${requestId}.request.json`);
+  const deadline = Date.now() + 10000;
+  for (;;) {
+    try {
+      const audit = JSON.parse(await readFile(`${directory}/${requestId}.response.json`, 'utf8'));
+      assert.equal(audit.containerPid, pid);
+      assert.equal(audit.requestId, requestId);
+      assert.ok(audit.hostPid > 0);
+      assert.match(audit.userNamespace, /^user:\[\d+\]$/);
+      assert.match(audit.pidNamespace, /^pid:\[\d+\]$/);
+      return audit;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      assert.ok(Date.now() < deadline, `host namespace observer did not inspect PID ${pid}`);
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
+}
 
 // Sandboxed renderers may deny same-UID /proc namespace inspection. Elevation
 // reads only these known process links; the scanner/browser never runs as root.
@@ -35,21 +63,31 @@ async function processEvidence(pid) {
     assert.ok(value, `missing ${name} for PID ${pid}`);
     return value.trim();
   };
+  const namespaces = inShippingContainer ? await containerNamespaces(pid) : {
+    userNamespace: await namespace(pid, 'user'), pidNamespace: await namespace(pid, 'pid'),
+  };
   return {
     pid, uid: field('Uid'), seccomp: field('Seccomp'), noNewPrivs: field('NoNewPrivs'),
-    namespacePids: field('NSpid'), userNamespace: await namespace(pid, 'user'),
-    pidNamespace: await namespace(pid, 'pid'),
+    seccompFilters: Number(field('Seccomp_filters')), capabilities: field('CapEff'),
+    namespacePids: field('NSpid'), ...namespaces,
   };
 }
 
 test('real renderer enables the sandbox by default', { timeout: 90000 }, async t => {
-  if (process.env.SANDBOX_LINUX_REQUIRED === '1') {
+  if (process.env.SANDBOX_LINUX_REQUIRED === '1' || inShippingContainer) {
     assert.ok(isLinux, 'required Linux verification must run on Linux');
   }
   if (isLinux) {
     assert.notEqual(process.getuid(), 0, 'run the scanner/browser as non-root');
     evidence.os = await readFile('/etc/os-release', 'utf8');
     evidence.parent = await processEvidence(process.pid);
+    if (inShippingContainer) {
+      assert.equal(process.arch, 'x64', 'only Linux amd64 shipping proof is supported');
+      assert.equal(evidence.parent.seccomp, '2');
+      assert.equal(evidence.parent.noNewPrivs, '1');
+      assert.equal(BigInt(`0x${evidence.parent.capabilities}`), 0n);
+      assert.match(await readFile('/proc/1/cmdline', 'utf8'), /docker-init|tini/, 'reaping init must be PID1');
+    }
   }
   const server = createServer((req, res) => {
     if (req.url !== '/api/get-header-html/1') {
@@ -67,7 +105,7 @@ test('real renderer enables the sandbox by default', { timeout: 90000 }, async t
   try {
     // Each variant launches the actual renderer. Observation delegates to real
     // Chromium and adds no production hook or access to renderer private state.
-    for (const value of [undefined, '0', 'false', '1', 'true']) {
+    for (const value of inShippingContainer ? [undefined] : [undefined, '0', 'false', '1', 'true']) {
       await t.test(`CHROMIUM_NO_SANDBOX=${value ?? '(unset)'}`, async t => {
         const disabled = value === '1' || value === 'true';
         let browser;
@@ -140,7 +178,15 @@ test('real renderer enables the sandbox by default', { timeout: 90000 }, async t
               }
               assert.ok(child.namespacePids.split(/\s+/).length > 1);
             }
-            assert.equal(evidence.parent.seccomp, '0', 'native CI proof must not rely on inherited container seccomp');
+            if (inShippingContainer) {
+              for (const child of record.renderers) {
+                for (const parent of [record.browser, evidence.parent]) {
+                  assert.ok(child.seccompFilters > parent.seccompFilters, 'Chromium must add a filter beyond the container baseline');
+                }
+              }
+            } else {
+              assert.equal(evidence.parent.seccomp, '0', 'native CI proof must not rely on inherited container seccomp');
+            }
           }
           const captured = await renderer.renderQuestion(1);
           assert.match(captured.html, /<p id="question">Synthetic no-math question<\/p>/);

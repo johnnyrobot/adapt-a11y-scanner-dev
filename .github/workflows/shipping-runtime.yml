@@ -1,0 +1,93 @@
+name: Shipping runtime
+
+on:
+  pull_request:
+  push:
+    branches: [main, ci/lt-146-shipping-runtime]
+
+permissions:
+  contents: read
+
+jobs:
+  linux-amd64:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # Host dev assets are test data only. Production dependencies/dist/browser
+      # come exclusively from the Dockerfile, with its original USER/ENTRYPOINT.
+      - run: npm ci
+      - uses: docker/setup-buildx-action@v3
+      - name: Build exact production Dockerfile
+        env:
+          BUILDX_METADATA_PROVENANCE: max
+        run: |
+          mkdir -p runtime-evidence
+          git rev-parse HEAD > runtime-evidence/commit.txt
+          uname -a > runtime-evidence/host.txt
+          docker version >> runtime-evidence/host.txt
+          sha256sum Dockerfile package-lock.json deploy/chromium-seccomp-amd64.json > runtime-evidence/inputs.sha256
+          docker buildx build --load --platform linux/amd64 --metadata-file runtime-evidence/build.json --tag scanner-proof:${GITHUB_SHA} . 2>&1 | tee runtime-evidence/build.log
+          docker image inspect scanner-proof:${GITHUB_SHA} > runtime-evidence/image.json
+      - name: Prove actual image renderer and lifecycle with loopback-only fixtures
+        run: |
+          chmod 777 runtime-evidence
+          docker create --name scanner-proof --init --network none --cap-drop ALL \
+            --security-opt no-new-privileges=true \
+            --security-opt seccomp="$PWD/deploy/chromium-seccomp-amd64.json" \
+            --shm-size 1g --stop-timeout 20 \
+            --mount type=bind,src="$PWD/test",dst=/app/test,readonly \
+            --mount type=bind,src="$PWD/node_modules/mathjax",dst=/app/node_modules/mathjax,readonly \
+            --mount type=bind,src="$PWD/runtime-evidence",dst=/evidence \
+            --env DOTENV_CONFIG_PATH=/dev/null --env SANDBOX_CONTAINER_REQUIRED=1 \
+            --env SANDBOX_AUDIT_DIR=/evidence --env SANDBOX_EVIDENCE_PATH=/evidence/sandbox.json \
+            --entrypoint node scanner-proof:${GITHUB_SHA} \
+            --test test/integration/renderer-sandbox.mjs test/integration/scan-contracts.mjs \
+            test/integration/trustworthy-capture.mjs test/integration/job-lifecycle.mjs \
+            test/integration/browser-startup.mjs
+          docker inspect scanner-proof > runtime-evidence/container.json
+          sudo python3 test/integration/container-observer.py scanner-proof "$PWD/runtime-evidence" > runtime-evidence/observer.log 2>&1 &
+          observer=$!
+          trap 'touch runtime-evidence/observer-stop; wait "$observer"; docker inspect scanner-proof > runtime-evidence/container-final.json; docker logs scanner-proof > runtime-evidence/test.log 2>&1' EXIT
+          timeout 240s docker start --attach scanner-proof
+          test "$(docker inspect --format '{{.State.ExitCode}}' scanner-proof)" = 0
+          test -s runtime-evidence/sandbox.json
+          touch runtime-evidence/observer-stop
+          wait "$observer"
+      - name: Inspect evidence and enforce runtime policy
+        run: node test/integration/verify-container-evidence.mjs runtime-evidence
+      - name: Prove Docker init forwards stop to the actual HTTP server
+        run: |
+          docker run --detach --name scanner-stop --init --network none --cap-drop ALL \
+            --security-opt no-new-privileges=true \
+            --security-opt seccomp="$PWD/deploy/chromium-seccomp-amd64.json" \
+            --shm-size 1g --stop-timeout 20 \
+            --mount type=bind,src="$PWD/test",dst=/app/test,readonly \
+            --mount type=bind,src="$PWD/runtime-evidence",dst=/evidence \
+            --env DOTENV_CONFIG_PATH=/dev/null --entrypoint node scanner-proof:${GITHUB_SHA} \
+            --import /app/test/integration/container-stop-fixture.mjs dist/server.js
+          trap 'docker logs scanner-stop > runtime-evidence/stop-server.log 2>&1; docker inspect scanner-stop > runtime-evidence/stop-container.json' EXIT
+          for i in $(seq 100); do
+            test ! -e runtime-evidence/stop-ready || break
+            sleep 0.1
+          done
+          test -e runtime-evidence/stop-ready
+          started=$(date +%s%3N)
+          docker stop --time 20 scanner-stop
+          elapsed=$(( $(date +%s%3N) - started ))
+          echo "$elapsed" > runtime-evidence/docker-stop-ms.txt
+          test "$elapsed" -lt 15000
+          test "$(docker inspect --format '{{.State.ExitCode}}' scanner-stop)" = 0
+          test -s runtime-evidence/stop-client.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scanner-linux-amd64-shipping-runtime
+          path: runtime-evidence/
+          if-no-files-found: error
